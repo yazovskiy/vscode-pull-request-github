@@ -11,11 +11,16 @@ import { ReviewManager } from './view/reviewManager';
 import { registerCommands } from './commands';
 import Logger from './common/logger';
 import { PullRequestManager } from './github/pullRequestManager';
-import { formatError, filterEvent, onceEvent } from './common/utils';
+import { formatError, onceEvent } from './common/utils';
 import { GitExtension, API as GitAPI, Repository } from './typings/git';
 import { Telemetry } from './common/telemetry';
 import { handler as uriHandler } from './common/uri';
 import { ITelemetry } from './github/interface';
+
+// fetch.promise polyfill
+const fetch = require('node-fetch');
+const PolyfillPromise = require('es6-promise').Promise;
+fetch.Promise = PolyfillPromise;
 
 let telemetry: ITelemetry;
 
@@ -81,13 +86,12 @@ export async function activate(context: vscode.ExtensionContext) {
 	const git = gitExtension.getAPI(1);
 
 	Logger.appendLine('Looking for git repository');
-	const firstSelectedRepository = git.repositories.filter(r => r.ui.selected)[0];
+	const firstRepository = git.repositories[0];
 
-	if (firstSelectedRepository) {
-		await init(context, git, firstSelectedRepository);
+	if (firstRepository) {
+		await init(context, git, firstRepository);
 	} else {
-		const onDidOpenRelevantRepository = filterEvent(git.onDidOpenRepository, r => r.ui.selected);
-		onceEvent(onDidOpenRelevantRepository)(r => init(context, git, r));
+		onceEvent(git.onDidOpenRepository)(r => init(context, git, r));
 	}
 }
 
