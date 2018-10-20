@@ -80,7 +80,6 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: IP
 		const path = await findOrCreatePRMarkdown(prManager);
 		const doc = await vscode.workspace.openTextDocument(path);
 		const editor = await vscode.window.showTextDocument(doc);
-
 		await promiseFromEvent(vscode.window.onDidChangeVisibleTextEditors, (visible, resolve) =>
 			visible.indexOf(editor) === -1 && resolve());
 		Logger.appendLine('ok, will create PR...');
