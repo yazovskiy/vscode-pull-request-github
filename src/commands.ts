@@ -5,6 +5,8 @@
 'use strict';
 
 import * as vscode from 'vscode';
+import { join } from 'path';
+
 import { ReviewManager } from './view/reviewManager';
 import { PullRequestOverviewPanel } from './github/pullRequestOverview';
 import { fromReviewUri, ReviewUriParams } from './common/uri';
@@ -12,12 +14,13 @@ import { GitFileChangeNode } from './view/treeNodes/fileChangeNode';
 import { PRNode } from './view/treeNodes/pullRequestNode';
 import { IPullRequestManager, IPullRequestModel, IPullRequest, ITelemetry } from './github/interface';
 import { Comment } from './common/comment';
-import { formatError } from './common/utils';
+import { formatError, promiseFromEvent } from './common/utils';
 import { GitChangeType } from './common/file';
 import { getDiffLineByPosition, getZeroBased } from './common/diffPositionMapping';
 import { DiffChangeType } from './common/diffHunk';
 import { DescriptionNode } from './view/treeNodes/descriptionNode';
-import { capitalize } from 'lodash';
+import { findOrCreatePRMarkdown } from './common/newPR';
+import Logger from './common/logger';
 
 const _onDidUpdatePR = new vscode.EventEmitter<IPullRequest>();
 export const onDidUpdatePR: vscode.Event<IPullRequest> = _onDidUpdatePR.event;
@@ -74,16 +77,23 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: IP
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.create', async () => {
-		const params = await prManager.getPullRequestDefaults();
+		const path = await findOrCreatePRMarkdown(prManager);
+		const doc = await vscode.workspace.openTextDocument(path);
+		const editor = await vscode.window.showTextDocument(doc);
 
-		for (const prop of Object.getOwnPropertyNames(params)) {
-			params[prop] = await vscode.window.showInputBox({
-				prompt: capitalize(prop),
-				value: params[prop],
-			});
-			if (!params[prop]) { return; }
-		}
-		return prManager.createPullRequest(params);
+		await promiseFromEvent(vscode.window.onDidChangeVisibleTextEditors, (visible, resolve) =>
+			visible.indexOf(editor) === -1 && resolve());
+		Logger.appendLine('ok, will create PR...');
+		// const params = await prManager.getPullRequestDefaults();
+
+		// for (const prop of Object.getOwnPropertyNames(params)) {
+		// 	params[prop] = await vscode.window.showInputBox({
+		// 		prompt: capitalize(prop),
+		// 		value: params[prop],
+		// 	});
+		// 	if (!params[prop]) { return; }
+		// }
+		// return prManager.createPullRequest(params);
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.pick', async (pr: PRNode | DescriptionNode | IPullRequestModel) => {
