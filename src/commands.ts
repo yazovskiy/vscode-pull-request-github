@@ -5,7 +5,6 @@
 'use strict';
 
 import * as vscode from 'vscode';
-import { join } from 'path';
 
 import { ReviewManager } from './view/reviewManager';
 import { PullRequestOverviewPanel } from './github/pullRequestOverview';
