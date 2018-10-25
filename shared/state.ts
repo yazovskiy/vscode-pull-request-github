@@ -2,6 +2,7 @@ export type State = {
 	newPR: NewPRState;
 	gitHubRemotes: GitHubRemotesState;
 	localBranches: string[];
+	draftPRs: { [uri: string]: DraftPR };
 };
 
 export type NewPRState = {
@@ -57,3 +58,5 @@ export type PullRequestCreateParams = {
 	repo: string;
 	title: string;
 };
+
+export type DraftPR = PullRequestCreateParams & {branch: string, __content: string};

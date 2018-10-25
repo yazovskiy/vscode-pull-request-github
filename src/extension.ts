@@ -17,6 +17,7 @@ import { Telemetry } from './common/telemetry';
 import { handler as uriHandler } from './common/uri';
 import { ITelemetry } from './github/interface';
 import { NewPRPanel } from './view/newPRPanel';
+import { RenderPanel } from './view/renderPanel';
 import { Store } from './store';
 
 // fetch.promise polyfill
@@ -76,6 +77,7 @@ async function init(context: vscode.ExtensionContext, git: GitAPI, repository: R
 	});
 
 	Store.init(prManager, vscode, context.subscriptions);
+	RenderPanel.init(context.extensionPath);
 	NewPRPanel.init(context.extensionPath);
 
 	telemetry.on('startup');

@@ -1,4 +1,4 @@
-import { Upstream } from './state';
+import { Upstream, DraftPR } from './state';
 
 export const SET_TITLE = 'pr/SET_TITLE';
 export const SET_BODY = 'pr/SET_BODY';
@@ -54,4 +54,14 @@ export type SetBase = {
 export const setBase = (isParent: boolean) => ({
 	type: SET_BASE,
 	isParent,
+});
+
+export const SET_PR_MARKDOWN = 'pr/SET_PR_MARKDOWN';
+export type SetPRMarkdown = {
+	type: 'pr/SET_PR_MARKDOWN';
+	uri: string;
+	src: string;
+};
+export const setPRMarkdown = (uri: string, src: string) => ({
+	type: SET_PR_MARKDOWN, uri, src
 });

@@ -643,3 +643,18 @@ input.title {
 .create-pr input[type=submit] {
 	margin-left: auto;
 }
+
+.pr-preview-pipeline {
+	display: flex;
+	padding: 9px;
+	border: 1px solid var(--vscode-button-background);
+	border-radius: 4px;
+	align-items: center;
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+}
+
+.pr-preview-pipeline .above {
+	margin: 4px;
+	padding: 4px;
+	opacity: 0.8;
+}

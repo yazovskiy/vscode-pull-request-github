@@ -17,7 +17,12 @@ import { GitChangeType } from './common/file';
 import { getDiffLineByPosition, getZeroBased } from './common/diffPositionMapping';
 import { DiffChangeType } from './common/diffHunk';
 import { DescriptionNode } from './view/treeNodes/descriptionNode';
-import { NewPRPanel } from './view/newPRPanel';
+import { findOrCreatePRMarkdown } from './common/newPR';
+// import { NewPRPanel } from './view/newPRPanel';
+import { PrPreviewPanel } from './view/renderPanel';
+import { Store } from './store';
+import Logger from './common/logger';
+import { setPRMarkdown } from '~/shared/actions';
 
 const _onDidUpdatePR = new vscode.EventEmitter<IPullRequest>();
 export const onDidUpdatePR: vscode.Event<IPullRequest> = _onDidUpdatePR.event;
@@ -73,9 +78,49 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: IP
 		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.create', async () =>
-		NewPRPanel.show()
-	));
+	// const snippet = () => {
+	// 	let item = new vscode.CompletionItem('Good part of the day', vscode.CompletionItemKind.Folder);
+	// 	item.insertText = new vscode.SnippetString("Good ${1|morning,afternoon,evening|}. It is ${1}, right?");
+	// 	item.documentation = new vscode.MarkdownString("Inserts a snippet that lets you select the _appropriate_ part of the day for your greeting.");
+
+	// 	return item;
+	// };
+
+	context.subscriptions.push(
+		vscode.languages.registerCompletionItemProvider({ scheme: 'file', pattern: '**/PULL_REQUEST.md' }, {
+			provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, cancel: vscode.CancellationToken, ctx: vscode.CompletionContext) {
+				const range = new vscode.Range(position.with({character: 0}), position);
+				const line = document.getText(range);
+				const idx = line.indexOf(':');
+				if (idx === -1) { return null; }
+				const key = line.substr(0, idx);
+				switch (key) {
+				case 'branch':
+					const { localBranches=[] } = Store.state;
+					return localBranches.map(name => new vscode.CompletionItem(name));
+				case 'remote':
+					const { gitHubRemotes={} } = Store.state;
+					return Object.keys(gitHubRemotes).map(name => new vscode.CompletionItem(name));
+				}
+				return null;
+			}
+		}, ':', ' ')
+	);
+
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeTextDocument(event => {
+			if (!event.document.uri.toString().endsWith('PULL_REQUEST.md')) { return; }
+			Store.dispatch(setPRMarkdown(event.document.uri.toString(), event.document.getText()));
+		})
+	);
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.create', async () => {
+		const path = await findOrCreatePRMarkdown(prManager);
+		const doc = await vscode.workspace.openTextDocument(path);
+		await vscode.window.showTextDocument(doc, vscode.ViewColumn.Active);
+		await PrPreviewPanel.show(doc.uri.toString(), vscode.ViewColumn.Two);
+		Store.dispatch(setPRMarkdown(doc.uri.toString(), doc.getText()));
+	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.pick', async (pr: PRNode | DescriptionNode | IPullRequestModel) => {
 		let pullRequestModel: IPullRequestModel;

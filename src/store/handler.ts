@@ -59,7 +59,9 @@ export const combineReducers:
 				const reducerForKey = reducers[key];
 				const nextStateForKey = reducerForKey(stateForKey, action, state);
 				if (nextStateForKey !== stateForKey) {
-					if (!hasCopied) { nextState = Object.assign({}, state); }
+					if (nextState === state) {
+						nextState = Object.assign({}, state);
+					}
 					nextState[key] = nextStateForKey;
 				}
 			}

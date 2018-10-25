@@ -14,7 +14,6 @@ const md = MarkdownIt({
 .use(Checkbox, {
 	divWrap: true,
 	divClass: 'github-checkbox',
-
 })
 .use(Sanitizer, {
 	imageClass: '',

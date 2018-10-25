@@ -17,6 +17,7 @@ function getWebviewConfig(env) {
 		entry: {
 			index: './preview-src/index.ts',
 			create: './preview-src/create.tsx',
+			preview: './preview-src/preview.tsx',
 		},
 		module: {
 			rules: [
