@@ -14,6 +14,10 @@ export class PRDocumentCommentProvider implements vscode.DocumentCommentProvider
 
 	private _prDocumentCommentProviders: {[key: number]: vscode.DocumentCommentProvider} = {};
 
+	startDraftLabel: string = 'Start Review';
+	deleteDraftLabel?: string;
+	finishDraftLabel?: string;
+
 	constructor() {}
 
 	public registerDocumentCommentProvider(pullRequestModel: IPullRequestModel, provider: vscode.DocumentCommentProvider) {
@@ -85,6 +89,18 @@ export class PRDocumentCommentProvider implements vscode.DocumentCommentProvider
 		}
 
 		return await commentProvider.deleteComment(document, comment, token);
+	}
+
+	startDraft(token: vscode.CancellationToken): Promise<void> {
+		return;
+	}
+
+	deleteDraft(token: vscode.CancellationToken): Promise<void> {
+		return;
+	}
+
+	finishDraft(token: vscode.CancellationToken): Promise<void> {
+		return;
 	}
 }
 

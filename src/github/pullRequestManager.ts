@@ -791,7 +791,10 @@ export class PullRequestManager implements IPullRequestManager {
 				pullRequest.update(data);
 			}
 
-			pullRequest.mergeBase = await PullRequestGitHelper.getPullRequestMergeBase(this.repository, remote, pullRequest);
+			if (!pullRequest.mergeBase) {
+				pullRequest.mergeBase = await PullRequestGitHelper.getPullRequestMergeBase(this.repository, remote, pullRequest);
+			}
+
 		} catch (e) {
 			vscode.window.showErrorMessage(`Fetching Pull Request merge base failed: ${formatError(e)}`);
 		}

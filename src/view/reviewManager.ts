@@ -199,56 +199,62 @@ export class ReviewManager implements vscode.DecorationProvider {
 		}, 1000 * 30);
 	}
 
-	private async updateState() {
+	private async updateState(pr?: IPullRequestModel) {
 		if (!this._validateStatusInProgress) {
-			this._validateStatusInProgress = this.validateState();
+			this._validateStatusInProgress = this.validateState(pr);
 			return this._validateStatusInProgress;
 		} else {
-			return this._validateStatusInProgress.then(_ => this._validateStatusInProgress = this.validateState());
+			return this._validateStatusInProgress.then(_ => this._validateStatusInProgress = this.validateState(pr));
 		}
 	}
 
-	private async validateState() {
-		await this._prManager.updateRepositories();
-
-		let branch = this._repository.state.HEAD;
-		if (!branch) {
-			this.clear(true);
-			return;
-		}
-
-		let matchingPullRequestMetadata = await this._prManager.getMatchingPullRequestMetadataForBranch();
-
-		if (!matchingPullRequestMetadata) {
-			Logger.appendLine(`Review> no matching pull request metadata found for current branch ${this._repository.state.HEAD.name}`);
-			this.clear(true);
-			return;
-		}
-
-		const hasPushedChanges = branch.commit !== this._lastCommitSha && branch.ahead === 0 && branch.behind === 0;
-		if (this._prNumber === matchingPullRequestMetadata.prNumber && !hasPushedChanges) {
-			return;
-		}
-
-		let remote = branch.upstream ? branch.upstream.remote : null;
-		if (!remote) {
-			Logger.appendLine(`Review> current branch ${this._repository.state.HEAD.name} hasn't setup remote yet`);
-			this.clear(true);
-			return;
-		}
-
-		// we switch to another PR, let's clean up first.
-		Logger.appendLine(`Review> current branch ${this._repository.state.HEAD.name} is associated with pull request #${matchingPullRequestMetadata.prNumber}`);
-		this.clear(false);
-		this._prNumber = matchingPullRequestMetadata.prNumber;
-		this._lastCommitSha = null;
-
-		const { owner, repositoryName } = matchingPullRequestMetadata;
-		const pr = await this._prManager.resolvePullRequest(owner, repositoryName, this._prNumber);
+	private async validateState(pr?: IPullRequestModel) {
 		if (!pr) {
-			this._prNumber = null;
-			Logger.appendLine('Review> This PR is no longer valid');
-			return;
+			await this._prManager.updateRepositories();
+
+			let branch = this._repository.state.HEAD;
+			if (!branch) {
+				this.clear(true);
+				return;
+			}
+
+			let matchingPullRequestMetadata = await this._prManager.getMatchingPullRequestMetadataForBranch();
+
+			if (!matchingPullRequestMetadata) {
+				Logger.appendLine(`Review> no matching pull request metadata found for current branch ${this._repository.state.HEAD.name}`);
+				this.clear(true);
+				return;
+			}
+
+			const hasPushedChanges = branch.commit !== this._lastCommitSha && branch.ahead === 0 && branch.behind === 0;
+			if (this._prNumber === matchingPullRequestMetadata.prNumber && !hasPushedChanges) {
+				return;
+			}
+
+			let remote = branch.upstream ? branch.upstream.remote : null;
+			if (!remote) {
+				Logger.appendLine(`Review> current branch ${this._repository.state.HEAD.name} hasn't setup remote yet`);
+				this.clear(true);
+				return;
+			}
+
+			// we switch to another PR, let's clean up first.
+			Logger.appendLine(`Review> current branch ${this._repository.state.HEAD.name} is associated with pull request #${matchingPullRequestMetadata.prNumber}`);
+			this.clear(false);
+			this._prNumber = matchingPullRequestMetadata.prNumber;
+			this._lastCommitSha = null;
+
+			const { owner, repositoryName } = matchingPullRequestMetadata;
+			pr = await this._prManager.resolvePullRequest(owner, repositoryName, this._prNumber);
+			if (!pr) {
+				this._prNumber = null;
+				Logger.appendLine('Review> This PR is no longer valid');
+				return;
+			}
+		} else {
+			// this is a shortcut from checkout process
+			this.clear(false);
+			this._prNumber = pr.prNumber;
 		}
 
 		this._prManager.activePullRequest = pr;
@@ -1036,7 +1042,8 @@ export class ReviewManager implements vscode.DecorationProvider {
 		}
 
 		this._telemetry.on('pr.checkout');
-		await this._repository.status();
+		this.updateState(pr);
+		// await this._repository.status();
 	}
 
 	public async publishBranch(branch: Branch): Promise<Branch> {
