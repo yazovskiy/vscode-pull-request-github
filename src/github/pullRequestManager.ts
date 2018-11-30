@@ -467,6 +467,46 @@ export class PullRequestManager implements IPullRequestManager {
 		}
 	}
 
+	async getReviews(pullRequest: IPullRequestModel): Promise<Github.PullRequestsGetReviewsResponseItem[]> {
+		const { octokit, remote } = await (pullRequest as PullRequestModel).githubRepository.ensure();
+
+		try {
+			let ret = await octokit.pullRequests.getReviews({
+				owner: remote.owner,
+				repo: remote.repositoryName,
+				number: pullRequest.prNumber,
+			});
+
+			return ret.data;
+		} catch(e) {
+			this.handleError(e);
+		}
+	}
+
+	async createPendingReview(pullRequest: IPullRequestModel, body: string, path: string, position: number): Promise<Github.PullRequestsCreateReviewResponse> {
+		const { octokit, remote } = await (pullRequest as PullRequestModel).githubRepository.ensure();
+
+		try {
+			let ret = await octokit.pullRequests.createReview({
+				owner: remote.owner,
+				repo: remote.repositoryName,
+				number: pullRequest.prNumber,
+				commit_id: pullRequest.head.sha,
+				comments: [
+					{
+						path: path,
+						body: body,
+						position: position
+					}
+				]
+			});
+
+			return ret.data;
+		} catch(e) {
+			this.handleError(e);
+		}
+	}
+
 	async createComment(pullRequest: IPullRequestModel, body: string, path: string, position: number): Promise<Comment> {
 		const { octokit, remote } = await (pullRequest as PullRequestModel).githubRepository.ensure();
 

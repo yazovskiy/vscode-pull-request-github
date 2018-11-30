@@ -801,6 +801,9 @@ export class ReviewManager implements vscode.DecorationProvider {
 
 	private registerCommentProvider() {
 		this._documentCommentProvider = vscode.workspace.registerDocumentCommentProvider({
+			startDraftLabel: 'Start Review',
+			deleteDraftLabel: 'Discard your review',
+			finishDraftLabel: 'Finish your review',
 			onDidChangeCommentThreads: this._onDidChangeDocumentCommentThreads.event,
 			provideDocumentComments: async (document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.CommentInfo> => {
 				let ranges: vscode.Range[] = [];

@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as Github from '@octokit/rest';
 import { parseDiff, getModifiedContentFromDiffHunk, DiffChangeType } from '../../common/diffHunk';
 import { mapHeadLineToDiffHunkPosition, getZeroBased, getAbsolutePosition, getPositionInDiff } from '../../common/diffPositionMapping';
 import { SlimFileChange, GitChangeType } from '../../common/file';
@@ -212,6 +213,7 @@ export class PRNode extends TreeNode {
 	private _fileChanges: (RemoteFileChangeNode | InMemFileChangeNode)[];
 	private _documentCommentsProvider: vscode.Disposable;
 	private _onDidChangeCommentThreads: vscode.EventEmitter<vscode.CommentThreadChangedEvent>;
+	private _pendingComment;
 
 	private _inMemPRContentProvider: vscode.Disposable;
 
@@ -530,7 +532,8 @@ export class PRNode extends TreeNode {
 				userName: rawComment.user.login,
 				gravatar: rawComment.user.avatar_url,
 				canEdit: rawComment.canEdit,
-				canDelete: rawComment.canDelete
+				canDelete: rawComment.canDelete,
+				isDraft: true
 			});
 
 			fileChange.comments.push(rawComment);
@@ -547,6 +550,23 @@ export class PRNode extends TreeNode {
 		}
 
 		return null;
+	}
+
+	async getPendingDraft() {
+		// let reviews = await this._prManager.getReviews(this.pullRequestModel);
+
+	}
+
+	async startDraft(token: vscode.CancellationToken): Promise<void> {
+
+	}
+
+	async deleteDraft(token: vscode.CancellationToken): Promise<void> {
+
+	}
+
+	async finishDraft(token: vscode.CancellationToken): Promise<void> {
+
 	}
 
 	dispose(): void {

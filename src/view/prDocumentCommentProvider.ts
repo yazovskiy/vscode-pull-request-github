@@ -14,9 +14,9 @@ export class PRDocumentCommentProvider implements vscode.DocumentCommentProvider
 
 	private _prDocumentCommentProviders: {[key: number]: vscode.DocumentCommentProvider} = {};
 
-	startDraftLabel: string = 'Start Review';
-	deleteDraftLabel?: string;
-	finishDraftLabel?: string;
+	startDraftLabel: string = 'Start a review';
+	deleteDraftLabel: string = 'Discard your review';
+	finishDraftLabel: string = 'Finish your review';
 
 	constructor() {}
 
@@ -91,16 +91,55 @@ export class PRDocumentCommentProvider implements vscode.DocumentCommentProvider
 		return await commentProvider.deleteComment(document, comment, token);
 	}
 
-	startDraft(token: vscode.CancellationToken): Promise<void> {
-		return;
+	async startDraft(token: vscode.CancellationToken): Promise<void> {
+		let editor = vscode.window.activeTextEditor;
+
+		if (!editor || editor.document) {
+			return;
+		}
+
+		const params = fromPRUri(editor.document.uri);
+		const commentProvider = this._prDocumentCommentProviders[params.prNumber];
+
+		if (!commentProvider) {
+			throw new Error(`Couldn't find document provider`);
+		}
+
+		return await commentProvider.startDraft(token);
 	}
 
-	deleteDraft(token: vscode.CancellationToken): Promise<void> {
-		return;
+	async deleteDraft(token: vscode.CancellationToken): Promise<void> {
+		let editor = vscode.window.activeTextEditor;
+
+		if (!editor || editor.document) {
+			return;
+		}
+
+		const params = fromPRUri(editor.document.uri);
+		const commentProvider = this._prDocumentCommentProviders[params.prNumber];
+
+		if (!commentProvider) {
+			throw new Error(`Couldn't find document provider`);
+		}
+
+		return await commentProvider.deleteDraft(token);
 	}
 
-	finishDraft(token: vscode.CancellationToken): Promise<void> {
-		return;
+	async finishDraft(token: vscode.CancellationToken): Promise<void> {
+		let editor = vscode.window.activeTextEditor;
+
+		if (!editor || editor.document) {
+			return;
+		}
+
+		const params = fromPRUri(editor.document.uri);
+		const commentProvider = this._prDocumentCommentProviders[params.prNumber];
+
+		if (!commentProvider) {
+			throw new Error(`Couldn't find document provider`);
+		}
+
+		return await commentProvider.finishDraft(token);
 	}
 }
 

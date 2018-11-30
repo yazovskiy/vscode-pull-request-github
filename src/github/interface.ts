@@ -120,6 +120,7 @@ export interface IPullRequestManager {
 	getPullRequestComments(pullRequest: IPullRequestModel): Promise<Comment[]>;
 	getPullRequestCommits(pullRequest: IPullRequestModel): Promise<Github.PullRequestsGetCommitsResponseItem[]>;
 	getCommitChangedFiles(pullRequest: IPullRequestModel, commit: Github.PullRequestsGetCommitsResponseItem): Promise<Github.ReposGetCommitResponseFilesItem[]>;
+	getReviews(pullRequest: IPullRequestModel): Promise<Github.PullRequestsGetReviewsResponseItem[]>;
 	getReviewComments(pullRequest: IPullRequestModel, reviewId: number): Promise<Github.PullRequestsCreateCommentResponse[]>;
 	getTimelineEvents(pullRequest: IPullRequestModel): Promise<TimelineEvent[]>;
 	getIssueComments(pullRequest: IPullRequestModel): Promise<Github.IssuesGetCommentsResponseItem[]>;
