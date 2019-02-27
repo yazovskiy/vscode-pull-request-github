@@ -352,6 +352,10 @@ export function parseGraphQLTimelineEvents(events: (GraphQL.MergedEvent | GraphQ
 	return ret;
 }
 
+/**
+ * 😕 👀 ❤️ 🎉
+ * 😄 🚀 👎 👍
+ */
 export function convertRESTTimelineEvents(events: any[]): Common.TimelineEvent[] {
 	events.forEach(event => {
 		if (event.event === Common.EventType.Commented) {
@@ -375,35 +379,35 @@ export function getReactionGroup(): { title: string; label: string; icon?: vscod
 	let ret = [
 		{
 			title: 'CONFUSED',
-			label: '😕',
+			label: 'Confused',
 			icon: Resource.icons.reactions.CONFUSED
 		}, {
 			title: 'EYES',
-			label: '👀',
+			label: 'Eyes',
 			icon: Resource.icons.reactions.EYES
 		}, {
 			title: 'HEART',
-			label: '❤️',
+			label: ' Heart',
 			icon: Resource.icons.reactions.HEART
 		}, {
 			title: 'HOORAY',
-			label: '🎉',
+			label: 'Hooray',
 			icon: Resource.icons.reactions.HOORAY
 		}, {
 			title: 'LAUGH',
-			label: '😄',
+			label: 'Laugh',
 			icon: Resource.icons.reactions.LAUGH
 		}, {
 			title: 'ROCKET',
-			label: '🚀',
+			label: 'Rocket',
 			icon: Resource.icons.reactions.ROCKET
 		}, {
 			title: 'THUMBS_DOWN',
-			label: '👎',
+			label: 'Thumbs down',
 			icon: Resource.icons.reactions.THUMBS_DOWN
 		}, {
 			title: 'THUMBS_UP',
-			label: '👍',
+			label: 'Thumbs up',
 			icon: Resource.icons.reactions.THUMBS_UP
 		}
 	];
