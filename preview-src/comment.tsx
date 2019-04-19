@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useContext, useState, useEffect } from 'react';
 
 import Markdown from './markdown';
-import { Spaced } from './space';
+import { Spaced, nbsp } from './space';
 import { Avatar, AuthorLink } from './user';
 import Timestamp from './timestamp';
 import { Comment } from '../src/common/comment';
@@ -40,13 +40,6 @@ export function CommentView({ id, canEdit, canDelete, user, author, htmlUrl, cre
 		onMouseEnter={() => setShowActionBar(true)}
 		onMouseLeave={() => setShowActionBar(false)}
 	>
-		{ ((canEdit || canDelete) && showActionBar)
-				? <div className='action-bar comment-actions'>
-						{canEdit ? <button onClick={() => setEditMode(true)}>{editIcon}</button> : null}
-						{canDelete ? <button onClick={() => deleteComment({ id: String(id) })}>{deleteIcon}</button> : null}
-					</div>
-				: null
-		}
 		<div className='review-comment-container'>
 			<div className='review-comment-header'>
 				<Spaced>
@@ -55,12 +48,19 @@ export function CommentView({ id, canEdit, canDelete, user, author, htmlUrl, cre
 					{
 						createdAt
 							? <>
-									commented
+									commented{nbsp}
 									<Timestamp href={htmlUrl} date={createdAt} />
 								</>
 							: <em>pending</em>
 					}
 				</Spaced>
+				{ ((canEdit || canDelete) && showActionBar)
+					? <div className='action-bar comment-actions'>
+							{canEdit ? <button onClick={() => setEditMode(true)}>{editIcon}</button> : null}
+							{canDelete ? <button onClick={() => deleteComment({ id: String(id) })}>{deleteIcon}</button> : null}
+						</div>
+					: null
+				}
 			</div>
 			<CommentBody bodyHTML={bodyHTML} body={bodyMd} />
 		</div>
