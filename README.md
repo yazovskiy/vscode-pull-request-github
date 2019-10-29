@@ -1,3 +1,5 @@
+[![Build Status](https://rebornix.visualstudio.com/Pull%20Request/_apis/build/status/Pull%20Request%20Build?branchName=master)](https://rebornix.visualstudio.com/Pull%20Request/_build/latest?definitionId=5&branchName=master)
+
 > Review and manage your GitHub pull requests directly in VS Code
 
 This extension allows you to review and manage GitHub pull requests in Visual Studio Code. The support includes:
@@ -21,6 +23,38 @@ It's easy to get started with GitHub Pull Requests for Visual Studio Code. Simpl
 1. A notification should appear asking you to sign in to GitHub; follow the directions to authenticate.
 1. You should be good to go!
 
+# Configuring the extension
+There are several settings that can be used to configure the extension.
+
+As mentioned above, `githubPullRequests.remotes` is used to specify what remotes the extension should try to fetch pull requests from.
+
+To customize the pull request tree, you can use the `githubPullRequests.queries` setting. This setting is a list of labels and search queries which populate the categories of the tree. By default, these queries are "Waiting For My Review", "Assigned To Me", and "Created By Me". An example of adding a "Mentioned Me" category is to change the setting to the following:
+
+```
+"githubPullRequests.queries": [
+	{
+		"label": "Waiting For My Review",
+		"query": "is:open review-requested:${user}"
+	},
+	{
+		"label": "Assigned To Me",
+		"query": "is:open assignee:${user}"
+	},
+	{
+		"label": "Created By Me",
+		"query": "is:open author:${user}"
+	},
+	{
+		"label": "Mentioned Me",
+		"query": "is:open mentions:${user}"
+	}
+]
+```
+
+Queries use [GitHub search syntax](https://help.github.com/en/articles/understanding-the-search-syntax).
+
+To view additional settings for the extension, you can open VS Code settings and search for "github pull requests".
+
 # Issues
 This extension is still in development, so please refer to our [issue tracker for known issues](https://github.com/Microsoft/vscode-pull-request-github/issues), and please contribute with additional information if you encounter an issue yourself.
 
@@ -29,6 +63,8 @@ This extension is still in development, so please refer to our [issue tracker fo
 See our [wiki](https://github.com/Microsoft/vscode-pull-request-github/wiki) for our FAQ.
 
 ## Contributing
+
+[![Total alerts](https://img.shields.io/lgtm/alerts/g/Microsoft/vscode-pull-request-github.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Microsoft/vscode-pull-request-github/alerts/)
 
 If you're interested in contributing, or want to explore the source code of this extension yourself, see our [contributing guide](https://github.com/Microsoft/vscode-pull-request-github/wiki/Contributing), which includes:
  - [How to Build and Run](https://github.com/Microsoft/vscode-pull-request-github/wiki/Contributing#build-and-run)

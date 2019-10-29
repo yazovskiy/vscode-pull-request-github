@@ -4,12 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 export enum PRType {
-	RequestReview = 0,
-	AssignedToMe = 1,
-	Mine = 2,
-	Mention = 3,
-	All = 4,
-	LocalPullRequest = 5
+	Query,
+	All,
+	LocalPullRequest
 }
 
 export enum ReviewEvent {
@@ -32,7 +29,7 @@ export interface ReviewState {
 export interface IAccount {
 	login: string;
 	name?: string;
-	avatarUrl: string;
+	avatarUrl?: string;
 	url: string;
 }
 
@@ -59,6 +56,8 @@ export interface ILabel {
 }
 
 export interface PullRequest {
+	id: number;
+	graphNodeId: string;
 	url: string;
 	number: number;
 	state: string;
@@ -74,7 +73,7 @@ export interface PullRequest {
 	labels: ILabel[];
 	merged: boolean;
 	mergeable?: boolean;
-	nodeId: string;
+	isDraft: boolean;
 }
 
 export interface IRawFileChange {
@@ -93,10 +92,6 @@ export interface IPullRequestsPagingOptions {
 	fetchNextPage: boolean;
 }
 
-export interface IGitHubRepository {
-	authenticate(): Promise<boolean>;
-}
-
 export interface IPullRequestEditData {
 	body?: string;
 	title?: string;
@@ -108,19 +103,7 @@ export type MergeMethodsAvailability = {
 	[method in MergeMethod]: boolean;
 };
 
-export interface ITelemetry {
-	on(action: 'startup'): Promise<void>;
-	on(action: 'authSuccess'): Promise<void>;
-	on(action: 'commentsFromEditor'): Promise<void>;
-	on(action: 'commentsFromDescription'): Promise<void>;
-	on(action: 'prListExpandLocalPullRequest'): Promise<void>;
-	on(action: 'prListExpandRequestReview'): Promise<void>;
-	on(action: 'prListExpandAssignedToMe'): Promise<void>;
-	on(action: 'prListExpandMine'): Promise<void>;
-	on(action: 'prListExpandAll'): Promise<void>;
-	on(action: 'prCheckoutFromContext'): Promise<void>;
-	on(action: 'prCheckoutFromDescription'): Promise<void>;
-	on(action: string): Promise<void>;
-
-	shutdown(): Promise<void>;
-}
+export type RepoAccessAndMergeMethods = {
+	hasWritePermission: boolean;
+	mergeMethodsAvailability: MergeMethodsAvailability
+};

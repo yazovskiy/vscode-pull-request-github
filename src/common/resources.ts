@@ -23,7 +23,7 @@ export class Resource {
 				Ignored: context.asAbsolutePath(path.join('resources', 'icons', 'light', 'status-ignored.svg')),
 				Conflict: context.asAbsolutePath(path.join('resources', 'icons', 'light', 'status-conflict.svg')),
 				Comment: context.asAbsolutePath(path.join('resources', 'icons', 'comment.svg')),
-				Fold: context.asAbsolutePath(path.join('resources', 'icons', 'light', 'fold.svg')),
+				Avatar: context.asAbsolutePath(path.join('resources', 'icons', 'light', 'github.svg')),
 				Description: context.asAbsolutePath(path.join('resources', 'icons', 'light', 'git-pull-request.svg'))
 			},
 			dark: {
@@ -36,7 +36,7 @@ export class Resource {
 				Ignored: context.asAbsolutePath(path.join('resources', 'icons', 'dark', 'status-ignored.svg')),
 				Conflict: context.asAbsolutePath(path.join('resources', 'icons', 'dark', 'status-conflict.svg')),
 				Comment: context.asAbsolutePath(path.join('resources', 'icons', 'comment.svg')),
-				Fold: context.asAbsolutePath(path.join('resources', 'icons', 'dark', 'fold.svg')),
+				Avatar: context.asAbsolutePath(path.join('resources', 'icons', 'dark', 'github.svg')),
 				Description: context.asAbsolutePath(path.join('resources', 'icons', 'dark', 'git-pull-request.svg'))
 			},
 			reactions: {

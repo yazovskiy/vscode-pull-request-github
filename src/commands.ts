@@ -8,11 +8,11 @@ import * as vscode from 'vscode';
 import * as pathLib from 'path';
 import { ReviewManager } from './view/reviewManager';
 import { PullRequestOverviewPanel } from './github/pullRequestOverview';
-import { fromReviewUri, ReviewUriParams } from './common/uri';
+import { fromReviewUri, ReviewUriParams, asImageDataURI, EMPTY_IMAGE_URI } from './common/uri';
 import { GitFileChangeNode, InMemFileChangeNode } from './view/treeNodes/fileChangeNode';
 import { CommitNode } from './view/treeNodes/commitNode';
 import { PRNode } from './view/treeNodes/pullRequestNode';
-import { ITelemetry, PullRequest } from './github/interface';
+import { PullRequest } from './github/interface';
 import { formatError } from './common/utils';
 import { GitChangeType } from './common/file';
 import { getDiffLineByPosition, getZeroBased } from './common/diffPositionMapping';
@@ -22,10 +22,12 @@ import { listHosts, deleteToken } from './authentication/keychain';
 import { writeFile, unlink } from 'fs';
 import Logger from './common/logger';
 import { GitErrorCodes } from './api/api';
-import { Comment } from './common/comment';
+import { IComment } from './common/comment';
+import { GHPRComment, TemporaryComment } from './github/prComment';
 import { PullRequestManager } from './github/pullRequestManager';
 import { PullRequestModel } from './github/pullRequestModel';
-import { CommentHandler } from './github/utils';
+import { resolveCommentHandler, CommentReply } from './commentHandlerResolver';
+import { ITelemetry } from './common/telemetry';
 
 const _onDidUpdatePR = new vscode.EventEmitter<PullRequest | undefined>();
 export const onDidUpdatePR: vscode.Event<PullRequest | undefined> = _onDidUpdatePR.event;
@@ -47,7 +49,7 @@ function ensurePR(prManager: PullRequestManager, pr?: PRNode | PullRequestModel)
 export function registerCommands(context: vscode.ExtensionContext, prManager: PullRequestManager,
 	reviewManager: ReviewManager, telemetry: ITelemetry) {
 	context.subscriptions.push(vscode.commands.registerCommand('auth.signout', async () => {
-		const selection = await vscode.window.showQuickPick(await listHosts(), { canPickMany: true });
+		const selection = await vscode.window.showQuickPick(await listHosts(), { canPickMany: true, ignoreFocusOut: true });
 		if (!selection) { return; }
 		await Promise.all(selection.map(host => deleteToken(host)));
 	}));
@@ -62,7 +64,11 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		} else {
 			vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(e.html_url));
 		}
-		telemetry.on('pr.openInGitHub');
+
+		/* __GDPR__
+			"pr.openInGitHub" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.openInGitHub');
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('review.suggestDiff', async (e) => {
@@ -101,11 +107,7 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 			// Reset HEAD and then apply reverse diff
 			await vscode.commands.executeCommand('git.unstageAll');
 
-			if (!vscode.workspace.rootPath) {
-				throw new Error('Current workspace root path is undefined.');
-			}
-
-			const tempFilePath = pathLib.resolve(vscode.workspace.rootPath, '.git', `${prManager.activePullRequest.prNumber}.diff`);
+			const tempFilePath = pathLib.join(prManager.repository.rootUri.path, '.git', `${prManager.activePullRequest.prNumber}.diff`);
 			writeFile(tempFilePath, diff, {}, async (writeError) => {
 				if (writeError) {
 					throw writeError;
@@ -138,17 +140,41 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		vscode.env.clipboard.writeText(e.sha);
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.openDiffView', (fileChangeNode: GitFileChangeNode | InMemFileChangeNode) => {
+	context.subscriptions.push(vscode.commands.registerCommand('pr.openOriginalFile', async (e: GitFileChangeNode) => {
+		// if this is an image, encode it as a base64 data URI
+		const imageDataURI = await asImageDataURI(e.parentFilePath, prManager.repository);
+		vscode.commands.executeCommand('vscode.open', imageDataURI || e.parentFilePath);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.openModifiedFile', (e: GitFileChangeNode) => {
+		vscode.commands.executeCommand('vscode.open', e.filePath);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.openDiffView', async (fileChangeNode: GitFileChangeNode | InMemFileChangeNode) => {
 		const parentFilePath = fileChangeNode.parentFilePath;
 		const filePath = fileChangeNode.filePath;
 		const fileName = fileChangeNode.fileName;
 		const isPartial = fileChangeNode.isPartial;
 		const opts = fileChangeNode.opts;
 
+		fileChangeNode.reveal(fileChangeNode, { select: true, focus: true });
+
 		if (isPartial) {
 			vscode.window.showInformationMessage('Your local repository is not up to date so only partial content is being displayed');
 		}
-		vscode.commands.executeCommand('vscode.diff', parentFilePath, filePath, fileName, opts);
+
+		let parentURI = await asImageDataURI(parentFilePath, prManager.repository) || parentFilePath;
+		let headURI = await asImageDataURI(filePath, prManager.repository) || filePath;
+		if (parentURI.scheme === 'data' || headURI.scheme === 'data') {
+			if (fileChangeNode.status === GitChangeType.ADD) {
+				parentURI = EMPTY_IMAGE_URI;
+			}
+			if (fileChangeNode.status === GitChangeType.DELETE) {
+				headURI = EMPTY_IMAGE_URI;
+			}
+		}
+
+		vscode.commands.executeCommand('vscode.diff', parentURI, headURI, fileName, opts);
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteLocalBranch', async (e: PRNode) => {
@@ -160,7 +186,7 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 			await prManager.deleteLocalPullRequest(pullRequestModel);
 		} catch (e) {
 			if (e.gitErrorCode === GitErrorCodes.BranchNotFullyMerged) {
-				let action = await vscode.window.showErrorMessage(`The branch '${pullRequestModel.localBranchName}' is not fully merged, are you sure you want to delete it? `, DELETE_BRANCH_FORCE);
+				const action = await vscode.window.showErrorMessage(`The branch '${pullRequestModel.localBranchName}' is not fully merged, are you sure you want to delete it? `, DELETE_BRANCH_FORCE);
 
 				if (action !== DELETE_BRANCH_FORCE) {
 					return;
@@ -177,10 +203,20 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		}
 
 		if (error) {
-			telemetry.on('pr.deleteLocalPullRequest.failure');
+			/* __GDPR__
+				"pr.deleteLocalPullRequest.failure" : {
+					"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
+				}
+			*/
+			telemetry.sendTelemetryEvent('pr.deleteLocalPullRequest.failure', {
+				message: error
+			});
 			await vscode.window.showErrorMessage(`Deleting local pull request branch failed: ${error}`);
 		} else {
-			telemetry.on('pr.deleteLocalPullRequest.success');
+			/* __GDPR__
+				"pr.deleteLocalPullRequest.success" : {}
+			*/
+			telemetry.sendTelemetryEvent('pr.deleteLocalPullRequest.success');
 			// fire and forget
 			vscode.commands.executeCommand('pr.refreshList');
 		}
@@ -190,16 +226,26 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		reviewManager.createPullRequest();
 	}));
 
+	context.subscriptions.push(vscode.commands.registerCommand('pr.createDraft', async () => {
+		reviewManager.createPullRequest(true);
+	}));
+
 	context.subscriptions.push(vscode.commands.registerCommand('pr.pick', async (pr: PRNode | DescriptionNode | PullRequestModel) => {
 		let pullRequestModel: PullRequestModel;
 
 		if (pr instanceof PRNode || pr instanceof DescriptionNode) {
 			pullRequestModel = pr.pullRequestModel;
-			telemetry.on('pr.checkout.context');
 		} else {
 			pullRequestModel = pr;
-			telemetry.on('pr.checkout.description');
 		}
+
+		const fromDescriptionPage = pr instanceof PullRequestModel;
+		/* __GDPR__
+			"pr.checkout" : {
+				"fromDescriptionPage" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
+			}
+		*/
+		telemetry.sendTelemetryEvent('pr.checkout', { fromDescription: fromDescriptionPage.toString() });
 
 		return vscode.window.withProgress({
 			location: vscode.ProgressLocation.SourceControl,
@@ -216,13 +262,28 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 			if (value === 'Yes') {
 				try {
 					newPR = await prManager.mergePullRequest(pullRequest);
-					vscode.commands.executeCommand('pr.refreshList');
-					telemetry.on('pr.merge.success');
 					return newPR;
 				} catch (e) {
 					vscode.window.showErrorMessage(`Unable to merge pull request. ${formatError(e)}`);
-					telemetry.on('pr.merge.failure');
 					return newPR;
+				}
+			}
+
+		});
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.readyForReview', async (pr?: PRNode) => {
+		const pullRequest = ensurePR(prManager, pr);
+		return vscode.window.showWarningMessage(`Are you sure you want to mark this pull request as ready to review on GitHub?`, { modal: true }, 'Yes').then(async value => {
+			let isDraft;
+			if (value === 'Yes') {
+				try {
+					isDraft = await prManager.setReadyForReview(pullRequest);
+					vscode.commands.executeCommand('pr.refreshList');
+					return isDraft;
+				} catch (e) {
+					vscode.window.showErrorMessage(`Unable to mark pull request as ready to review. ${formatError(e)}`);
+					return isDraft;
 				}
 			}
 
@@ -234,12 +295,12 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		return vscode.window.showWarningMessage(`Are you sure you want to close this pull request on GitHub? This will close the pull request without merging.`, 'Yes', 'No').then(async value => {
 			if (value === 'Yes') {
 				try {
-					let newComment: Comment | undefined = undefined;
+					let newComment: IComment | undefined = undefined;
 					if (message) {
 						newComment = await prManager.createIssueComment(pullRequest, message);
 					}
 
-					let newPR = await prManager.closePullRequest(pullRequest);
+					const newPR = await prManager.closePullRequest(pullRequest);
 					vscode.commands.executeCommand('pr.refreshList');
 					_onDidUpdatePR.fire(newPR);
 					return newComment;
@@ -264,21 +325,37 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 	context.subscriptions.push(vscode.commands.registerCommand('pr.openDescription', async (descriptionNode: DescriptionNode) => {
 		if (!descriptionNode) {
 			// the command is triggerred from command palette or status bar, which means we are already in checkout mode.
-			let rootNodes = await reviewManager.prFileChangesProvider.getChildren();
+			const rootNodes = await reviewManager.prFileChangesProvider.getChildren();
 			descriptionNode = rootNodes[0] as DescriptionNode;
 		}
 		const pullRequest = ensurePR(prManager, descriptionNode.pullRequestModel);
+		descriptionNode.reveal(descriptionNode, { select: true, focus: true });
 		// Create and show a new webview
 		PullRequestOverviewPanel.createOrShow(context.extensionPath, prManager, pullRequest, descriptionNode);
-		telemetry.on('pr.openDescription');
+
+		/* __GDPR__
+			"pr.openDescription" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.openDescription');
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.refreshDescription', async () => {
+		if (PullRequestOverviewPanel.currentPanel) {
+			PullRequestOverviewPanel.refresh();
+		}
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.openDescriptionToTheSide', async (descriptionNode: DescriptionNode) => {
-		let pr = descriptionNode.pullRequestModel;
+		const pr = descriptionNode.pullRequestModel;
 		const pullRequest = ensurePR(prManager, pr);
+		descriptionNode.reveal(descriptionNode, { select: true, focus: true });
 		// Create and show a new webview
 		PullRequestOverviewPanel.createOrShow(context.extensionPath, prManager, pullRequest, descriptionNode, true);
-		telemetry.on('pr.openDescriptionToTheSide');
+
+		/* __GDPR__
+			"pr.openDescriptionToTheSide" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.openDescriptionToTheSide');
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.viewChanges', async (fileChange: GitFileChangeNode) => {
@@ -297,8 +374,8 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		}
 
 		// Show the file change in a diff view.
-		let { path, ref, commit } = fromReviewUri(fileChange.filePath);
-		let previousCommit = `${commit}^`;
+		const { path, ref, commit } = fromReviewUri(fileChange.filePath);
+		const previousCommit = `${commit}^`;
 		const query: ReviewUriParams = {
 			path: path,
 			ref: ref,
@@ -321,7 +398,7 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 				const diffLine = getDiffLineByPosition(fileChange.diffHunks, sortedOutdatedComments[0].originalPosition!);
 
 				if (diffLine) {
-					let lineNumber = Math.max(getZeroBased(diffLine.type === DiffChangeType.Delete ? diffLine.oldLineNumber : diffLine.newLineNumber), 0);
+					const lineNumber = Math.max(getZeroBased(diffLine.type === DiffChangeType.Delete ? diffLine.oldLineNumber : diffLine.newLineNumber), 0);
 					options.selection = new vscode.Range(lineNumber, 0, lineNumber, 0);
 				}
 			}
@@ -334,44 +411,120 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		await prManager.authenticate();
 	}));
 
+	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteLocalBranchesNRemotes', async () => {
+		await prManager.deleteLocalBranchesNRemotes();
+	}));
+
 	context.subscriptions.push(vscode.commands.registerCommand('pr.signinAndRefreshList', async () => {
 		if (await prManager.authenticate()) {
 			vscode.commands.executeCommand('pr.refreshList');
 		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.replyComment', async (handler: CommentHandler, thread: vscode.CommentThread) => {
-		telemetry.on('pr.replyComment');
-		handler.createOrReplyComment(thread);
+	context.subscriptions.push(vscode.commands.registerCommand('pr.configureRemotes', async () => {
+		const { name, publisher } = require('../package.json') as { name: string, publisher: string };
+		const extensionId = `${publisher}.${name}`;
+
+		return vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${extensionId} remotes`);
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.startReview', async (handler: CommentHandler, thread: vscode.CommentThread) => {
-		telemetry.on('pr.startReview');
-		handler.startReview(thread);
+	context.subscriptions.push(vscode.commands.registerCommand('pr.startReview', async (reply: CommentReply) => {
+		/* __GDPR__
+			"pr.startReview" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.startReview');
+		const handler = resolveCommentHandler(reply.thread);
+
+		if (handler) {
+			handler.startReview(reply.thread, reply.text);
+		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.finishReview', async (handler: CommentHandler, thread: vscode.CommentThread) => {
-		telemetry.on('pr.finishReview');
-		await handler.finishReview(thread);
+	context.subscriptions.push(vscode.commands.registerCommand('pr.finishReview', async (reply: CommentReply) => {
+		/* __GDPR__
+			"pr.finishReview" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.finishReview');
+		const handler = resolveCommentHandler(reply.thread);
+
+		if (handler) {
+			await handler.finishReview(reply.thread, reply.text);
+		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteReview', async (handler: CommentHandler) => {
-		telemetry.on('pr.deleteReview');
-		await handler.deleteReview();
+	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteReview', async (reply: CommentReply) => {
+		/* __GDPR__
+			"pr.deleteReview" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.deleteReview');
+		const shouldDelete = await vscode.window.showWarningMessage('Delete this review and all associated comments?', { modal: true }, 'Delete');
+		if (shouldDelete) {
+			const handler = resolveCommentHandler(reply.thread);
+
+			if (handler) {
+				await handler.deleteReview();
+			}
+
+			if (!reply.thread.comments.length) {
+				reply.thread.dispose();
+			}
+		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.editComment', async (handler: CommentHandler, thread: vscode.CommentThread, comment: vscode.Comment) => {
-		telemetry.on('pr.editComment');
-		await handler.editComment(thread, comment);
+	context.subscriptions.push(vscode.commands.registerCommand('pr.createComment', async (reply: CommentReply) => {
+		/* __GDPR__
+			"pr.createComment" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.createComment');
+		const handler = resolveCommentHandler(reply.thread);
+
+		if (handler) {
+			handler.createOrReplyComment(reply.thread, reply.text);
+		}
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteComment', async (handler: CommentHandler, thread: vscode.CommentThread, comment: vscode.Comment) => {
-		telemetry.on('pr.deleteComment');
-		await handler.deleteComment(thread, comment);
+	context.subscriptions.push(vscode.commands.registerCommand('pr.editComment', async (comment: GHPRComment | TemporaryComment) => {
+		/* __GDPR__
+			"pr.editComment" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.editComment');
+		comment.startEdit();
 	}));
 
-	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteThread', async (thread: vscode.CommentThread) => {
-		telemetry.on('pr.deleteThread');
-		thread.dispose!();
+	context.subscriptions.push(vscode.commands.registerCommand('pr.cancelEditComment', async (comment: GHPRComment | TemporaryComment) => {
+		/* __GDPR__
+			"pr.cancelEditComment" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.cancelEditComment');
+		comment.cancelEdit();
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.saveComment', async (comment: GHPRComment | TemporaryComment) => {
+		/* __GDPR__
+			"pr.saveComment" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.saveComment');
+		const handler = resolveCommentHandler(comment.parent);
+
+		if (handler) {
+			await handler.editComment(comment.parent, comment);
+		}
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('pr.deleteComment', async (comment: GHPRComment | TemporaryComment) => {
+		/* __GDPR__
+			"pr.deleteComment" : {}
+		*/
+		telemetry.sendTelemetryEvent('pr.deleteComment');
+
+		const shouldDelete = await vscode.window.showWarningMessage('Delete comment?', { modal: true }, 'Delete');
+
+		if (shouldDelete === 'Delete') {
+			const handler = resolveCommentHandler(comment.parent);
+
+			if (handler) {
+				await handler.deleteComment(comment.parent, comment);
+			}
+		}
 	}));
 }

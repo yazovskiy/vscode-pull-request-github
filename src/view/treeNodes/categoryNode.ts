@@ -4,19 +4,26 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { PRType, ITelemetry } from '../../github/interface';
+import { PRType } from '../../github/interface';
 import { PRNode } from './pullRequestNode';
 import { TreeNode } from './treeNode';
 import { formatError } from '../../common/utils';
 import { AuthenticationError } from '../../common/authentication';
 import { PullRequestManager } from '../../github/pullRequestManager';
 import { PullRequestModel } from '../../github/pullRequestModel';
+import { ITelemetry } from '../../common/telemetry';
 
 export enum PRCategoryActionType {
 	Empty,
 	More,
 	TryOtherRemotes,
-	Login
+	Login,
+	NoRemotes,
+	NoGitRepositories,
+	NoOpenFolder,
+	NoMatchingRemotes,
+	ConfigureRemotes,
+	Initializing
 }
 
 export class PRCategoryActionNode extends TreeNode implements vscode.TreeItem {
@@ -63,6 +70,28 @@ export class PRCategoryActionNode extends TreeNode implements vscode.TreeItem {
 					arguments: []
 				};
 				break;
+			case PRCategoryActionType.NoRemotes:
+				this.label = 'No GitHub repositories found.';
+				break;
+			case PRCategoryActionType.NoGitRepositories:
+				this.label = 'No git repositories found.';
+				break;
+			case PRCategoryActionType.NoOpenFolder:
+				this.label = 'You have not yet opened a folder.';
+				break;
+			case PRCategoryActionType.NoMatchingRemotes:
+				this.label = 'No remotes match the current setting.';
+				break;
+			case PRCategoryActionType.ConfigureRemotes:
+				this.label = 'Configure remotes...';
+				this.command = {
+					title: 'Configure remotes',
+					command: 'pr.configureRemotes',
+					arguments: []
+				};
+				break;
+			case PRCategoryActionType.Initializing:
+				this.label = 'Loading...';
 			default:
 				break;
 		}
@@ -89,7 +118,9 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 		public parent: TreeNode | vscode.TreeView<TreeNode>,
 		private _prManager: PullRequestManager,
 		private _telemetry: ITelemetry,
-		private _type: PRType
+		private _type: PRType,
+		_categoryLabel?: string,
+		private _categoryQuery?: string
 	) {
 		super();
 
@@ -99,14 +130,8 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 			case PRType.All:
 				this.label = 'All';
 				break;
-			case PRType.RequestReview:
-				this.label = 'Waiting For My Review';
-				break;
-			case PRType.AssignedToMe:
-				this.label = 'Assigned To Me';
-				break;
-			case PRType.Mine:
-				this.label = 'Created By Me';
+			case PRType.Query:
+				this.label = _categoryLabel!;
 				break;
 			case PRType.LocalPullRequest:
 				this.label = 'Local Pull Request Branches';
@@ -123,7 +148,10 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 		if (this._type === PRType.LocalPullRequest) {
 			try {
 				this.prs = await this._prManager.getLocalPullRequests();
-				this._telemetry.on('prList.expand.local');
+				/* __GDPR__
+					"pr.expand.local" : {}
+				*/
+				this._telemetry.sendTelemetryEvent('pr.expand.local');
 			} catch (e) {
 				vscode.window.showErrorMessage(`Fetching local pull requests failed: ${formatError(e)}`);
 				needLogin = e instanceof AuthenticationError;
@@ -131,23 +159,22 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 		} else {
 			if (!this.fetchNextPage) {
 				try {
-					const response = await this._prManager.getPullRequests(this._type, { fetchNextPage: false });
+					const response = await this._prManager.getPullRequests(this._type, { fetchNextPage: false }, this._categoryQuery);
 					this.prs = response.pullRequests;
 					hasMorePages = response.hasMorePages;
 					hasUnsearchedRepositories = response.hasUnsearchedRepositories;
 
 					switch (this._type) {
 						case PRType.All:
-							this._telemetry.on('prList.expand.all');
-							break;
-						case PRType.AssignedToMe:
-							this._telemetry.on('prList.expand.assignedToMe');
-							break;
-						case PRType.RequestReview:
-							this._telemetry.on('prList.expand.requestReview');
-							break;
-						case PRType.Mine:
-							this._telemetry.on('prList.expand.mine');
+							/* __GDPR__
+								"pr.expand.all" : {}
+							*/
+							this._telemetry.sendTelemetryEvent('pr.expand.all');
+						case PRType.Query:
+							/* __GDPR__
+								"pr.expand.query" : {}
+							*/
+							this._telemetry.sendTelemetryEvent('pr.expand.query');
 							break;
 					}
 
@@ -157,7 +184,7 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 				}
 			} else {
 				try {
-					const response = await this._prManager.getPullRequests(this._type, { fetchNextPage: true });
+					const response = await this._prManager.getPullRequests(this._type, { fetchNextPage: true }, this._categoryQuery);
 					this.prs = this.prs.concat(response.pullRequests);
 					hasMorePages = response.hasMorePages;
 					hasUnsearchedRepositories = response.hasUnsearchedRepositories;
@@ -171,7 +198,7 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 		}
 
 		if (this.prs && this.prs.length) {
-			let nodes: TreeNode[] = this.prs.map(prItem => new PRNode(this, this._prManager, prItem, this._type === PRType.LocalPullRequest));
+			const nodes: TreeNode[] = this.prs.map(prItem => new PRNode(this, this._prManager, prItem, this._type === PRType.LocalPullRequest));
 			if (hasMorePages) {
 				nodes.push(new PRCategoryActionNode(this, PRCategoryActionType.More, this));
 			} else if (hasUnsearchedRepositories) {
@@ -181,8 +208,8 @@ export class CategoryTreeNode extends TreeNode implements vscode.TreeItem {
 			this.childrenDisposables = nodes;
 			return nodes;
 		} else {
-			let category = needLogin ? PRCategoryActionType.Login : PRCategoryActionType.Empty;
-			let result = [new PRCategoryActionNode(this, category)];
+			const category = needLogin ? PRCategoryActionType.Login : PRCategoryActionType.Empty;
+			const result = [new PRCategoryActionNode(this, category)];
 
 			this.childrenDisposables = result;
 			return result;

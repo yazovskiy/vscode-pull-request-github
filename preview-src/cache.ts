@@ -25,6 +25,11 @@ export interface PullRequest {
 	commitsCount: number;
 	repositoryDefaultBranch: any;
 	canEdit: boolean;
+	/**
+	 * Users with push access to repo have rights to merge/close PRs,
+	 * edit title/description, assign reviewers/labels etc.
+	 */
+	hasWritePermission: boolean;
 	pendingCommentText?: string;
 	pendingCommentDrafts?: { [key: string]: string; };
 	status: ReposGetCombinedStatusForRefResponse;
@@ -33,22 +38,22 @@ export interface PullRequest {
 	mergeMethodsAvailability: MergeMethodsAvailability;
 	supportsGraphQl: boolean;
 	reviewers: ReviewState[];
+	isDraft: boolean;
 }
 
 export function getState(): PullRequest {
-	return vscode.getState() || {};
+	return vscode.getState();
 }
 
 export function setState(pullRequest: PullRequest): void {
-	let oldPullRequest = getState();
+	const oldPullRequest = getState();
 
-	if (oldPullRequest.number && oldPullRequest.number === pullRequest.number) {
-		pullRequest = Object.assign(pullRequest, {
-			pendingCommentText: oldPullRequest.pendingCommentText
-		});
+	if (oldPullRequest &&
+		oldPullRequest.number && oldPullRequest.number === pullRequest.number) {
+		pullRequest.pendingCommentText = oldPullRequest.pendingCommentText;
 	}
 
-	vscode.setState(pullRequest);
+	if (pullRequest) { vscode.setState(pullRequest); }
 }
 
 export function updateState(data: Partial<PullRequest>): void {

@@ -6,6 +6,7 @@
 export interface MergedEvent {
 	__typename: string;
 	id: string;
+	databaseId: number;
 	actor: {
 		login: string;
 		avatarUrl: string;
@@ -20,6 +21,18 @@ export interface MergedEvent {
 		commitUrl: string;
 	};
 	url: string;
+}
+
+export interface HeadRefDeletedEvent {
+	__typename: string;
+	id: string;
+	actor: {
+		login: string;
+		avatarUrl: string;
+		url: string;
+	};
+	createdAt: string;
+	headRefName: string;
 }
 
 export interface IssueComment {
@@ -88,24 +101,29 @@ export interface ReviewComment {
 export interface Commit {
 	__typename: string;
 	id: string;
-	author: {
-		user: {
-			login: string;
+	databaseId: number;
+	commit: {
+		author: {
+			user: {
+				login: string;
+				avatarUrl: string;
+				url: string;
+			}
+		};
+		committer: {
 			avatarUrl: string;
-			url: string;
-		}
+			name: string;
+		};
+		oid: string;
+		message: string;
 	};
-	committer: {
-		avatarUrl: string;
-		name: string;
-	};
+
 	url: string;
-	oid: string;
-	message: string;
 }
 
 export interface AssignedEvent {
 	__typename: string;
+	databaseId: number;
 	actor: {
 		login: string;
 		avatarUrl: string;
@@ -140,12 +158,8 @@ export interface Review {
 export interface TimelineEventsResponse {
 	repository: {
 		pullRequest: {
-			timeline: {
-				edges: [
-					{
-						node: (MergedEvent | Review | IssueComment | Commit | AssignedEvent)[];
-					}
-				]
+			timelineItems: {
+				nodes: (MergedEvent | Review | IssueComment | Commit | AssignedEvent | HeadRefDeletedEvent)[];
 			}
 		}
 	};
@@ -159,6 +173,16 @@ export interface PendingReviewIdResponse {
 		}
 	};
 	rateLimit: RateLimit;
+}
+
+export interface PullRequestState {
+	repository: {
+		pullRequest: {
+			title: string;
+			number: number;
+			state: 'OPEN' | 'CLOSED' | 'MERGED';
+		}
+	};
 }
 
 export interface PullRequestCommentsResponse {
@@ -207,6 +231,14 @@ export interface AddCommentResponse {
 export interface EditCommentResponse {
 	updatePullRequestReviewComment: {
 		pullRequestReviewComment: ReviewComment;
+	};
+}
+
+export interface MarkPullRequestReadyForReviewResponse {
+	markPullRequestReadyForReview: {
+		pullRequest: {
+			isDraft: boolean
+		};
 	};
 }
 
@@ -271,6 +303,8 @@ export interface Ref {
 export interface PullRequestResponse {
 	repository: {
 		pullRequest: {
+			id: string;
+			databaseId: number;
 			number: number;
 			url: string;
 			state: 'OPEN' | 'CLOSED' | 'MERGED';
@@ -287,15 +321,13 @@ export interface PullRequestResponse {
 			headRef?: Ref;
 			baseRef?: Ref;
 			labels: {
-				nodes: [
-					{
-						name: string;
-					}
-				]
+				nodes: {
+					name: string;
+				}[],
 			}
 			merged: boolean;
 			mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
-			id: string;
+			isDraft: boolean;
 		}
 	};
 	rateLimit: RateLimit;

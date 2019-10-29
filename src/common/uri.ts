@@ -8,6 +8,8 @@
 import { Uri, UriHandler, EventEmitter } from 'vscode';
 import { GitChangeType } from './file';
 import { PullRequestModel } from '../github/pullRequestModel';
+import { Repository } from '../api/api';
+import * as pathUtils from 'path';
 
 export interface ReviewUriParams {
 	path: string;
@@ -43,30 +45,39 @@ export interface GitUriOptions {
 	base: boolean;
 }
 
-export function toDiffViewFileUri(uri: Uri, filePath: string | undefined, ref: string | undefined, commit: string, isOutdated: boolean, options: GitUriOptions): Uri {
-	const params: ReviewUriParams = {
-		path: filePath ? filePath : uri.path,
-		ref,
-		commit: commit,
-		base: options.base,
-		isOutdated
-	};
+const ImageMimetypes = [
+	'image/png',
+	'image/gif',
+	'image/jpeg',
+	'image/webp',
+	'image/tiff',
+	'image/bmp'
+];
 
-	let path = uri.path;
+// a 1x1 pixel transparent gif, from http://png-pixel.com/
+export const EMPTY_IMAGE_URI = Uri.parse(`data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==`);
 
-	if (options.replaceFileExtension) {
-		path = `${path}.git`;
+export async function asImageDataURI(uri: Uri, repository: Repository): Promise<Uri | undefined> {
+	try {
+		const { commit, baseCommit, headCommit, isBase } = JSON.parse(uri.query);
+		const ref = uri.scheme === 'review' ? commit :
+			isBase ? baseCommit : headCommit;
+		const { size, object } = await repository.getObjectDetails(ref, uri.fsPath);
+		const { mimetype } = await repository.detectObjectType(object);
+
+		if (mimetype === 'text/plain') {
+			return;
+		}
+
+		if (ImageMimetypes.indexOf(mimetype) > -1) {
+			const contents = await repository.buffer(ref, uri.fsPath);
+			return Uri.parse(`data:${mimetype};label:${pathUtils.basename(uri.fsPath)};description:${ref};size:${size};base64,${contents.toString('base64')}`);
+		}
+	} catch (err) {
+		return;
 	}
-
-	return uri.with({
-		path,
-		query: JSON.stringify(params)
-	});
 }
 
-// As a mitigation for extensions like ESLint showing warnings and errors
-// for git URIs, let's change the file extension of these uris to .git,
-// when `replaceFileExtension` is true.
 export function toReviewUri(uri: Uri, filePath: string | undefined, ref: string | undefined, commit: string, isOutdated: boolean, options: GitUriOptions): Uri {
 	const params: ReviewUriParams = {
 		path: filePath ? filePath : uri.path,
@@ -90,13 +101,15 @@ export function toReviewUri(uri: Uri, filePath: string | undefined, ref: string 
 }
 
 export interface FileChangeNodeUriParams {
-	hasComments?: boolean;
+	prNumber: number;
+	fileName: string;
 	status?: GitChangeType;
 }
 
-export function toResourceUri(uri: Uri, hasComments: boolean, status: GitChangeType) {
+export function toResourceUri(uri: Uri, prNumber: number, fileName: string, status: GitChangeType) {
 	const params = {
-		hasComments: hasComments,
+		prNumber: prNumber,
+		fileName: fileName,
 		status: status
 	};
 
@@ -122,7 +135,7 @@ export function toPRUri(uri: Uri, pullRequestModel: PullRequestModel, baseCommit
 		remoteName: pullRequestModel.githubRepository.remote.remoteName
 	};
 
-	let path = uri.path;
+	const path = uri.path;
 
 	return uri.with({
 		scheme: 'pr',

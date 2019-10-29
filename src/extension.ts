@@ -5,41 +5,47 @@
 'use strict';
 
 import * as vscode from 'vscode';
+import TelemetryReporter from 'vscode-extension-telemetry';
+import { Repository } from './api/api';
+import { ApiImpl } from './api/api1';
+import * as Keychain from './authentication/keychain';
 import { migrateConfiguration } from './authentication/vsConfiguration';
-import { Resource } from './common/resources';
-import { ReviewManager } from './view/reviewManager';
 import { registerCommands } from './commands';
 import Logger from './common/logger';
-import { PullRequestManager } from './github/pullRequestManager';
-import { formatError, onceEvent } from './common/utils';
-import { registerBuiltinGitProvider, registerLiveShareGitProvider } from './gitProviders/api';
-import { Telemetry } from './common/telemetry';
+import { Resource } from './common/resources';
 import { handler as uriHandler } from './common/uri';
-import { ITelemetry } from './github/interface';
-import * as Keychain from './authentication/keychain';
+import { formatError, onceEvent } from './common/utils';
+import * as PersistentState from './common/persistentState';
+import { EXTENSION_ID } from './constants';
+import { PullRequestManager } from './github/pullRequestManager';
+import { registerBuiltinGitProvider, registerLiveShareGitProvider } from './gitProviders/api';
 import { FileTypeDecorationProvider } from './view/fileTypeDecorationProvider';
-import { ApiImpl } from './api/api1';
-import { Repository } from './api/api';
+import { PullRequestsTreeDataProvider } from './view/prsTreeDataProvider';
+import { ReviewManager } from './view/reviewManager';
+
+const aiKey: string = 'AIF-d9b70cd4-b9f9-4d70-929b-a071c400b217';
 
 // fetch.promise polyfill
 const fetch = require('node-fetch');
 const PolyfillPromise = require('es6-promise').Promise;
 fetch.Promise = PolyfillPromise;
 
-let telemetry: ITelemetry;
+let telemetry: TelemetryReporter;
 
-async function init(context: vscode.ExtensionContext, git: ApiImpl, repository: Repository): Promise<void> {
+async function init(context: vscode.ExtensionContext, git: ApiImpl, repository: Repository, tree: PullRequestsTreeDataProvider): Promise<void> {
 	context.subscriptions.push(Logger);
 	Logger.appendLine('Git repository found, initializing review manager and pr tree view.');
 
 	Keychain.init(context);
+	PersistentState.init(context);
+
 	await migrateConfiguration();
 	context.subscriptions.push(Keychain.onDidChange(async _ => {
 		if (prManager) {
 			try {
 				await prManager.clearCredentialCache();
-				if (repository) {
-					repository.status();
+				if (reviewManager) {
+					reviewManager.updateState();
 				}
 			} catch (e) {
 				vscode.window.showErrorMessage(formatError(e));
@@ -49,9 +55,17 @@ async function init(context: vscode.ExtensionContext, git: ApiImpl, repository: 
 
 	context.subscriptions.push(vscode.window.registerUriHandler(uriHandler));
 	context.subscriptions.push(new FileTypeDecorationProvider());
-	const prManager = new PullRequestManager(repository, telemetry);
-	const reviewManager = new ReviewManager(context, Keychain.onDidChange, repository, prManager, telemetry);
+
+	const prManager = new PullRequestManager(repository, telemetry, git);
+	context.subscriptions.push(prManager);
+
+	const reviewManager = new ReviewManager(context, repository, prManager, tree, telemetry);
+	tree.initialize(prManager);
 	registerCommands(context, prManager, reviewManager, telemetry);
+
+	git.onDidChangeState(() => {
+		reviewManager.updateState();
+	});
 
 	git.repositories.forEach(repo => {
 		repo.ui.onDidChange(() => {
@@ -59,6 +73,7 @@ async function init(context: vscode.ExtensionContext, git: ApiImpl, repository: 
 			if (repo.ui.selected) {
 				prManager.repository = repo;
 				reviewManager.repository = repo;
+				tree.updateQueries();
 			}
 		});
 	});
@@ -68,11 +83,15 @@ async function init(context: vscode.ExtensionContext, git: ApiImpl, repository: 
 			if (repo.ui.selected) {
 				prManager.repository = repo;
 				reviewManager.repository = repo;
+				tree.updateQueries();
 			}
 		});
 	});
 
-	telemetry.on('startup');
+	/* __GDPR__
+		"startup" : {}
+	*/
+	telemetry.sendTelemetryEvent('startup');
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<ApiImpl> {
@@ -80,18 +99,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<ApiImp
 	Resource.initialize(context);
 	const apiImpl = new ApiImpl();
 
-	telemetry = new Telemetry(context);
+	const version = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON.version;
+	telemetry = new TelemetryReporter(EXTENSION_ID, version, aiKey);
+	context.subscriptions.push(telemetry);
+
 	context.subscriptions.push(registerBuiltinGitProvider(apiImpl));
 	context.subscriptions.push(registerLiveShareGitProvider(apiImpl));
 	context.subscriptions.push(apiImpl);
 
 	Logger.appendLine('Looking for git repository');
-	const firstRepository = apiImpl.repositories[0];
 
-	if (firstRepository) {
-		await init(context, apiImpl, firstRepository);
+	const prTree = new PullRequestsTreeDataProvider(telemetry);
+	context.subscriptions.push(prTree);
+
+	// The Git extension API sometimes returns a single repository that does not have selected set,
+	// so fall back to the first repository if no selected repository is found.
+	const selectedRepository = apiImpl.repositories.find(repository => repository.ui.selected) || apiImpl.repositories[0];
+	if (selectedRepository) {
+		await init(context, apiImpl, selectedRepository, prTree);
 	} else {
-		onceEvent(apiImpl.onDidOpenRepository)(r => init(context, apiImpl, r));
+		onceEvent(apiImpl.onDidOpenRepository)(r => init(context, apiImpl, r, prTree));
 	}
 
 	return apiImpl;
@@ -99,6 +126,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<ApiImp
 
 export async function deactivate() {
 	if (telemetry) {
-		await telemetry.shutdown();
+		telemetry.dispose();
 	}
 }

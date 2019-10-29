@@ -4,15 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as Octokit from '@octokit/rest';
+import Octokit = require('@octokit/rest');
 import Logger from '../common/logger';
 import { Remote, parseRemote } from '../common/remote';
-import { PRType, IGitHubRepository, IAccount, MergeMethodsAvailability } from './interface';
+import { IAccount, RepoAccessAndMergeMethods } from './interface';
 import { PullRequestModel } from './pullRequestModel';
 import { CredentialStore, GitHub } from './credentials';
 import { AuthenticationError } from '../common/authentication';
 import { QueryOptions, MutationOptions, ApolloQueryResult, NetworkStatus, FetchResult } from 'apollo-boost';
-import { PRDocumentCommentProvider } from '../view/prDocumentCommentProvider';
+import { PRCommentController } from '../view/prCommentController';
 import { convertRESTPullRequestToRawPullRequest, parseGraphQLPullRequest } from './utils';
 import { PullRequestResponse, MentionableUsersResponse } from './graphql';
 const queries = require('./queries.gql');
@@ -26,14 +26,19 @@ export interface PullRequestData {
 	hasMorePages: boolean;
 }
 
-export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
+export interface IMetadata extends Octokit.ReposGetResponse {
+	currentUser: any;
+}
+
+export class GitHubRepository implements vscode.Disposable {
 	static ID = 'GitHubRepository';
-	private _hub: GitHub | undefined;
-	private _initialized: boolean;
-	private _metadata: any;
+	protected _initialized: boolean;
+	protected _hub: GitHub | undefined;
+	protected _metadata: IMetadata;
 	private _toDispose: vscode.Disposable[] = [];
 	public commentsController?: vscode.CommentController;
-	public commentsProvider?: PRDocumentCommentProvider;
+	public commentsHandler?: PRCommentController;
+	public readonly isGitHubDotCom: boolean;
 
 	public get hub(): GitHub {
 		if (!this._hub) {
@@ -46,17 +51,17 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		return this._hub;
 	}
 
-	public async ensureCommentsProvider(): Promise<void> {
+	public async ensureCommentsController(): Promise<void> {
 		try {
-			if (this.commentsProvider) {
+			if (this.commentsController) {
 				return;
 			}
 
 			await this.ensure();
-			this.commentsController = vscode.comment.createCommentController(`github-pull-request-${this.remote.normalizedHost}`, `GitHub Pull Request for ${this.remote.normalizedHost}`);
-			this.commentsProvider = new PRDocumentCommentProvider(this.commentsController);
+			this.commentsController = vscode.comments.createCommentController(`browse-${this.remote.normalizedHost}`, `GitHub Pull Request for ${this.remote.normalizedHost}`);
+			this.commentsHandler = new PRCommentController(this.commentsController);
 			this._toDispose.push(this.commentsController);
-			this._toDispose.push(this.commentsProvider);
+			this._toDispose.push(this.commentsController);
 		} catch (e) {
 			console.log(e);
 		}
@@ -72,6 +77,7 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 	}
 
 	constructor(public remote: Remote, private readonly _credentialStore: CredentialStore) {
+		this.isGitHubDotCom = remote.host.toLowerCase() === 'github.com';
 	}
 
 	get supportsGraphQl(): boolean {
@@ -151,16 +157,6 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		return this;
 	}
 
-	async authenticate(): Promise<boolean> {
-		this._initialized = true;
-		if (!await this._credentialStore.hasOctokit(this.remote)) {
-			this._hub = await this._credentialStore.login(this.remote);
-		} else {
-			this._hub = this._credentialStore.getHub(this.remote);
-		}
-		return this.octokit !== undefined;
-	}
-
 	async getDefaultBranch(): Promise<string> {
 		try {
 			Logger.debug(`Fetch default branch - enter`, GitHubRepository.ID);
@@ -179,41 +175,45 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		return 'master';
 	}
 
-	async getMergeMethodsAvailability(): Promise<MergeMethodsAvailability> {
+	async getRepoAccessAndMergeMethods(): Promise<RepoAccessAndMergeMethods> {
 		try {
-			Logger.debug(`Fetch available merge methods - enter`, GitHubRepository.ID);
+			Logger.debug(`Fetch repo permissions and available merge methods - enter`, GitHubRepository.ID);
 			const { octokit, remote } = await this.ensure();
 			const { data } = await octokit.repos.get({
 				owner: remote.owner,
 				repo: remote.repositoryName
 			});
-			Logger.debug(`Fetch available merge methods - done`, GitHubRepository.ID);
+			Logger.debug(`Fetch repo permissions and available merge methods - done`, GitHubRepository.ID);
 
 			return {
-				merge: data.allow_merge_commit,
-				squash: data.allow_squash_merge,
-				rebase: data.allow_rebase_merge
+				// Users with push access to repo have rights to merge/close PRs,
+				// edit title/description, assign reviewers/labels etc.
+				hasWritePermission: data.permissions.push,
+				mergeMethodsAvailability: {
+					merge: data.allow_merge_commit,
+					squash: data.allow_squash_merge,
+					rebase: data.allow_rebase_merge
+				}
 			};
 		} catch (e) {
-			Logger.appendLine(`GitHubRepository> Fetching available merge methods failed: ${e}`);
+			Logger.appendLine(`GitHubRepository> Fetching repo permissions and available merge methods failed: ${e}`);
 		}
 
 		return {
-			merge: true,
-			squash: true,
-			rebase: true
+			hasWritePermission: true,
+			mergeMethodsAvailability: {
+				merge: true,
+				squash: true,
+				rebase: true
+			}
 		};
 	}
 
-	async getPullRequests(prType: PRType, page?: number): Promise<PullRequestData | undefined> {
-		return prType === PRType.All ? this.getAllPullRequests(page) : this.getPullRequestsForCategory(prType, page);
-	}
-
-	private async getAllPullRequests(page?: number): Promise<PullRequestData | undefined> {
+	async getAllPullRequests(page?: number): Promise<PullRequestData | undefined> {
 		try {
 			Logger.debug(`Fetch all pull requests - enter`, GitHubRepository.ID);
 			const { octokit, remote } = await this.ensure();
-			const result = await octokit.pullRequests.getAll({
+			const result = await octokit.pulls.list({
 				owner: remote.owner,
 				repo: remote.repositoryName,
 				per_page: PULL_REQUEST_PAGE_SIZE,
@@ -221,6 +221,16 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 			});
 
 			const hasMorePages = !!result.headers.link && result.headers.link.indexOf('rel="next"') > -1;
+			if (!result.data) {
+				// We really don't expect this to happen, but it seems to (see #574).
+				// Log a warning and return an empty set.
+				Logger.appendLine(`Warning: no result data for ${remote.owner}/${remote.repositoryName} Status: ${result.status}`);
+				return {
+					pullRequests: [],
+					hasMorePages: false,
+				};
+			}
+
 			const pullRequests = result.data
 				.map(
 					pullRequest => {
@@ -231,8 +241,7 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 							return null;
 						}
 
-						const item = convertRESTPullRequestToRawPullRequest(pullRequest);
-						return new PullRequestModel(this, this.remote, item);
+						return new PullRequestModel(this, this.remote, convertRESTPullRequestToRawPullRequest(pullRequest, this));
 					}
 				)
 				.filter(item => item !== null) as PullRequestModel[];
@@ -253,41 +262,43 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		}
 	}
 
-	private async getPullRequestsForCategory(prType: PRType, page?: number): Promise<PullRequestData | undefined> {
+	async getPullRequestsForCategory(categoryQuery: string, page?: number): Promise<PullRequestData | undefined> {
 		try {
-			Logger.debug(`Fetch pull request catogory ${PRType[prType]} - enter`, GitHubRepository.ID);
+			Logger.debug(`Fetch pull request category ${categoryQuery} - enter`, GitHubRepository.ID);
 			const { octokit, remote } = await this.ensure();
-			const user = await octokit.users.get({});
+			const user = await octokit.users.getAuthenticated({});
 			// Search api will not try to resolve repo that redirects, so get full name first
 			const repo = await octokit.repos.get({ owner: this.remote.owner, repo: this.remote.repositoryName });
-			const { data, headers } = await octokit.search.issues({
-				q: this.getPRFetchQuery(repo.data.full_name, user.data.login, prType),
+			const { data, headers } = await octokit.search.issuesAndPullRequests({
+				q: this.getPRFetchQuery(repo.data.full_name, user.data.login, categoryQuery),
 				per_page: PULL_REQUEST_PAGE_SIZE,
 				page: page || 1
 			});
-			let promises: Promise<Octokit.Response<Octokit.PullRequestsGetResponse>>[] = [];
+			const promises: Promise<Octokit.Response<Octokit.PullsGetResponse>>[] = [];
 			data.items.forEach((item: any /** unluckily Octokit.AnyResponse */) => {
 				promises.push(new Promise(async (resolve, reject) => {
-					let prData = await octokit.pullRequests.get({
+					const prData = await octokit.pulls.get({
 						owner: remote.owner,
 						repo: remote.repositoryName,
-						number: item.number
+						pull_number: item.number
 					});
 					resolve(prData);
 				}));
 			});
 
 			const hasMorePages = !!headers.link && headers.link.indexOf('rel="next"') > -1;
-			const pullRequests = await Promise.all(promises).then(values => {
-				return values.map(item => {
-					if (!item.data.head.repo) {
-						Logger.appendLine('GitHubRepository> The remote branch for this PR was already deleted.');
-						return null;
-					}
-					return new PullRequestModel(this, this.remote, convertRESTPullRequestToRawPullRequest(item.data));
-				}).filter(item => item !== null) as PullRequestModel[];
-			});
-			Logger.debug(`Fetch pull request catogory ${PRType[prType]} - done`, GitHubRepository.ID);
+			const pullRequestResponses = await Promise.all(promises);
+
+			const pullRequests = pullRequestResponses.map(response => {
+				if (!response.data.head.repo) {
+					Logger.appendLine('GitHubRepository> The remote branch for this PR was already deleted.');
+					return null;
+				}
+
+				return new PullRequestModel(this, this.remote, convertRESTPullRequestToRawPullRequest(response.data, this));
+			}).filter(item => item !== null) as PullRequestModel[];
+
+			Logger.debug(`Fetch pull request category ${categoryQuery} - done`, GitHubRepository.ID);
 
 			return {
 				pullRequests,
@@ -318,11 +329,11 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 						number: id
 					}
 				});
-
 				Logger.debug(`Fetch pull request ${id} - done`, GitHubRepository.ID);
-				return new PullRequestModel(this, remote, parseGraphQLPullRequest(data));
+
+				return new PullRequestModel(this, remote, parseGraphQLPullRequest(data, this));
 			} else {
-				let { data } = await octokit.pullRequests.get({
+				const { data } = await octokit.pulls.get({
 					owner: remote.owner,
 					repo: remote.repositoryName,
 					number: id
@@ -334,11 +345,29 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 					return;
 				}
 
-				let item = convertRESTPullRequestToRawPullRequest(data);
-				return new PullRequestModel(this, remote, item);
+				return new PullRequestModel(this, remote, convertRESTPullRequestToRawPullRequest(data, this));
 			}
 		} catch (e) {
 			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
+			return;
+		}
+	}
+
+	async deleteBranch(pullRequestModel: PullRequestModel): Promise<void> {
+		const { octokit } = await this.ensure();
+
+		if (!pullRequestModel.validatePullRequestModel('Unable to delete branch')) {
+			return;
+		}
+
+		try {
+			await octokit.git.deleteRef({
+				owner: pullRequestModel.head.repositoryCloneUrl.owner,
+				repo: pullRequestModel.head.repositoryCloneUrl.repositoryName,
+				ref: `heads/${pullRequestModel.head.ref}`
+			});
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to delete branch: ${e}`);
 			return;
 		}
 	}
@@ -350,7 +379,7 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		if (supportsGraphQl) {
 			let after = null;
 			let hasNextPage = false;
-			let ret: IAccount[] = [];
+			const ret: IAccount[] = [];
 
 			do {
 				try {
@@ -364,12 +393,11 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 						}
 					});
 
-					ret.push(...result.data.repository.mentionableUsers.nodes.map((node: any) => {
+					ret.push(...result.data.repository.mentionableUsers.nodes.map(node => {
 						return {
 							login: node.login,
 							avatarUrl: node.avatarUrl,
 							name: node.name,
-							email: node.email,
 							url: node.url
 						};
 					}));
@@ -388,22 +416,8 @@ export class GitHubRepository implements IGitHubRepository, vscode.Disposable {
 		return [];
 	}
 
-	private getPRFetchQuery(repo: string, user: string, type: PRType) {
-		let filter = '';
-		switch (type) {
-			case PRType.RequestReview:
-				filter = `review-requested:${user}`;
-				break;
-			case PRType.AssignedToMe:
-				filter = `assignee:${user}`;
-				break;
-			case PRType.Mine:
-				filter = `author:${user}`;
-				break;
-			default:
-				break;
-		}
-
+	private getPRFetchQuery(repo: string, user: string, query: string) {
+		const filter = query.replace('${user}', user);
 		return `is:open ${filter} type:pr repo:${repo}`;
 	}
 }

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Comment } from './comment';
+import { IComment } from './comment';
 import { IAccount } from '../github/interface';
 
 export enum EventType {
@@ -15,6 +15,7 @@ export enum EventType {
 	Labeled,
 	Milestoned,
 	Assigned,
+	HeadRefDeleted,
 	Merged,
 	Other
 }
@@ -26,6 +27,7 @@ export interface Committer {
 }
 
 export interface CommentEvent {
+	id: number;
 	htmlUrl: string;
 	body: string;
 	bodyHTML?: string;
@@ -33,13 +35,13 @@ export interface CommentEvent {
 	event: EventType;
 	canEdit?: boolean;
 	canDelete?: boolean;
-	id: number;
 	createdAt: string;
 }
 
 export interface ReviewEvent {
+	id: number;
 	event: EventType;
-	comments: Comment[];
+	comments: IComment[];
 	submittedAt: string;
 	body: string;
 	bodyHTML?: string;
@@ -47,20 +49,20 @@ export interface ReviewEvent {
 	user: IAccount;
 	authorAssociation: string;
 	state: 'COMMENTED' | 'APPROVED' | 'CHANGES_REQUESTED' | 'PENDING' | 'REQUESTED';
-	id: number;
 }
 
 export interface CommitEvent {
+	id: number;
 	author: IAccount;
 	event: EventType;
 	sha: string;
-	url: string;
 	htmlUrl: string;
 	message: string;
 	bodyHTML?: string;
 }
 
 export interface MergedEvent {
+	id: number;
 	graphNodeId: string;
 	user: IAccount;
 	createdAt: string;
@@ -72,12 +74,21 @@ export interface MergedEvent {
 }
 
 export interface AssignEvent {
+	id: number;
 	event: EventType;
 	user: IAccount;
 	actor: IAccount;
 }
 
-export type TimelineEvent = CommitEvent | ReviewEvent | CommentEvent | MergedEvent | AssignEvent;
+export interface HeadRefDeleteEvent {
+	id: string;
+	event: EventType;
+	actor: IAccount;
+	createdAt: string;
+	headRef: string;
+}
+
+export type TimelineEvent = CommitEvent | ReviewEvent | CommentEvent | MergedEvent | AssignEvent | HeadRefDeleteEvent;
 
 export function isReviewEvent(event: TimelineEvent): event is ReviewEvent {
 	return event.event === EventType.Reviewed;
@@ -97,4 +108,8 @@ export function isMergedEvent(event: TimelineEvent): event is MergedEvent {
 
 export function isAssignEvent(event: TimelineEvent): event is AssignEvent {
 	return event.event === EventType.Assigned;
+}
+
+export function isHeadDeleteEvent(event: TimelineEvent): event is HeadRefDeleteEvent {
+	return event.event === EventType.HeadRefDeleted;
 }

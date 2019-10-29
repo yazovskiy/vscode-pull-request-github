@@ -4,121 +4,91 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import * as Octokit from '../common/octokit';
+import * as Octokit from '@octokit/rest';
 import * as vscode from 'vscode';
 import { IAccount, PullRequest, IGitHubRef } from './interface';
-import { Comment, Reaction } from '../common/comment';
+import { IComment, Reaction } from '../common/comment';
 import { parseDiffHunk, DiffHunk } from '../common/diffHunk';
 import * as Common from '../common/timelineEvent';
 import * as GraphQL from './graphql';
 import { Resource } from '../common/resources';
-import { PullRequestModel } from './pullRequestModel';
-import { getEditCommand, getDeleteCommand, getAcceptInputCommands } from './commands';
-import { PRNode } from '../view/treeNodes/pullRequestNode';
-import { ReviewDocumentCommentProvider } from '../view/reviewDocumentCommentProvider';
 import { uniqBy } from '../common/utils';
+import { GitHubRepository } from './githubRepository';
+import { GHPRCommentThread, GHPRComment } from './prComment';
+import { ThreadData } from '../view/treeNodes/pullRequestNode';
 
-export interface CommentHandler {
-	commentController?: vscode.CommentController;
-	startReview(thread: vscode.CommentThread): Promise<void>;
-	finishReview(thread: vscode.CommentThread): Promise<void>;
-	deleteReview(): Promise<void>;
-	createOrReplyComment(thread: vscode.CommentThread): Promise<void>;
-	editComment(thread: vscode.CommentThread, comment: vscode.Comment): Promise<void>;
-	deleteComment(thread: vscode.CommentThread, comment: vscode.Comment): Promise<void>;
+export interface CommentReactionHandler {
+	toggleReaction(comment: vscode.Comment, reaction: vscode.CommentReaction): Promise<void>;
 }
-
-export function convertToVSCodeComment(comment: Comment, command: vscode.Command | undefined): vscode.Comment & { _rawComment: Comment } {
-	let vscodeComment: vscode.Comment & { _rawComment: Comment } = {
-		_rawComment: comment,
-		commentId: comment.id.toString(),
-		body: new vscode.MarkdownString(comment.body),
-		selectCommand: command,
-		userName: comment.user!.login,
-		userIconPath: vscode.Uri.parse(comment.user!.avatarUrl),
-		label: !!comment.isDraft ? 'Pending' : undefined,
-		commentReactions: comment.reactions ? comment.reactions.map(reaction => {
-			return { label: reaction.label, hasReacted: reaction.viewerHasReacted, count: reaction.count, iconPath: reaction.icon };
-		}) : []
-	};
-
-	return vscodeComment;
-}
-
-export function createVSCodeCommentThread(thread: vscode.CommentThread, commentController: vscode.CommentController, pullRequestModel: PullRequestModel, inDraftMode: boolean, node: PRNode | ReviewDocumentCommentProvider) {
-	let vscodeThread = commentController.createCommentThread(
-		thread.threadId,
-		thread.resource,
+export function createVSCodeCommentThread(thread: ThreadData, commentController: vscode.CommentController): GHPRCommentThread {
+	const vscodeThread = commentController.createCommentThread(
+		thread.uri,
 		thread.range!,
-		thread.comments
+		[]
 	);
 
-	vscodeThread.comments = thread.comments.map(comment => {
-		updateCommentCommands(comment, commentController, vscodeThread, pullRequestModel, node);
-		return comment;
-	});
+	vscodeThread.threadId = thread.threadId;
 
-	updateCommentThreadLabel(vscodeThread);
+	vscodeThread.comments = thread.comments.map(comment => new GHPRComment(comment, vscodeThread as GHPRCommentThread));
 
-	let commands = getAcceptInputCommands(vscodeThread, inDraftMode, node, pullRequestModel.githubRepository.supportsGraphQl);
-	vscodeThread.acceptInputCommand = commands.acceptInputCommand;
-	vscodeThread.additionalCommands = commands.additionalCommands;
+	updateCommentThreadLabel(vscodeThread as GHPRCommentThread);
 	vscodeThread.collapsibleState = thread.collapsibleState;
-	return vscodeThread;
+	return vscodeThread as GHPRCommentThread;
 }
 
-export function updateCommentThreadLabel(thread: vscode.CommentThread) {
+export function updateCommentThreadLabel(thread: GHPRCommentThread) {
 	if (thread.comments.length) {
-		const participantsList = uniqBy(thread.comments as vscode.Comment[], comment => comment.userName).map(comment => `@${comment.userName}`).join(', ');
+		const participantsList = uniqBy(thread.comments as vscode.Comment[], comment => comment.author.name).map(comment => `@${comment.author.name}`).join(', ');
 		thread.label = `Participants: ${participantsList}`;
 	} else {
 		thread.label = 'Start discussion';
 	}
 }
 
-export function updateCommentReactions(comment: vscode.Comment, reactions: Reaction[]) {
-	comment.commentReactions = reactions.map(ret => {
-		return { label: ret.label, hasReacted: ret.viewerHasReacted, count: ret.count, iconPath: ret.icon };
+export function generateCommentReactions(reactions: Reaction[] | undefined) {
+	return getReactionGroup().map(reaction => {
+		if (!reactions) {
+			return { label: reaction.label, authorHasReacted: false, count: 0, iconPath: reaction.icon || '' };
+		}
+
+		const matchedReaction = reactions.find(re => re.label === reaction.label);
+
+		if (matchedReaction) {
+			return { label: matchedReaction.label, authorHasReacted: matchedReaction.viewerHasReacted, count: matchedReaction.count, iconPath: reaction.icon || '' };
+		} else {
+			return { label: reaction.label, authorHasReacted: false, count: 0, iconPath: reaction.icon || '' };
+		}
 	});
 }
+export function updateCommentReactions(comment: vscode.Comment, reactions: Reaction[] | undefined) {
+	comment.reactions = generateCommentReactions(reactions);
+}
 
-export function updateCommentReviewState(thread: vscode.CommentThread, newDraftMode: boolean) {
+export function updateCommentReviewState(thread: GHPRCommentThread, newDraftMode: boolean) {
 	if (newDraftMode) {
 		return;
 	}
 
 	thread.comments = thread.comments.map(comment => {
-		let patchedComment = comment as (vscode.Comment & { _rawComment: Comment });
-		patchedComment._rawComment.isDraft = false;
-		patchedComment.label = undefined;
+		if (comment instanceof GHPRComment) {
+			comment._rawComment.isDraft = false;
+		}
 
-		return patchedComment;
+		comment.label = undefined;
+
+		return comment;
 	});
 }
 
-export function updateCommentCommands(vscodeComment: vscode.Comment, commentControl: vscode.CommentController, thread: vscode.CommentThread, pullRequestModel: PullRequestModel, node: PRNode | ReviewDocumentCommentProvider) {
-	if (commentControl && pullRequestModel) {
-		let patchedComment = vscodeComment as vscode.Comment & { _rawComment: Comment, canEdit?: boolean, canDelete?: boolean, isDraft?: boolean };
-
-		if (patchedComment._rawComment.canEdit) {
-			patchedComment.editCommand = getEditCommand(thread, vscodeComment, node);
-		}
-
-		if (patchedComment._rawComment.canDelete) {
-			patchedComment.deleteCommand = getDeleteCommand(thread, vscodeComment, node);
-		}
-	}
-}
-
-export function convertRESTUserToAccount(user: Octokit.PullRequestsGetAllResponseItemUser): IAccount {
+export function convertRESTUserToAccount(user: Octokit.PullsListResponseItemUser, githubRepository: GitHubRepository): IAccount {
 	return {
 		login: user.login,
 		url: user.html_url,
-		avatarUrl: user.avatar_url
+		avatarUrl: githubRepository.isGitHubDotCom ? user.avatar_url : undefined
 	};
 }
 
-export function convertRESTHeadToIGitHubRef(head: Octokit.PullRequestsGetResponseHead) {
+export function convertRESTHeadToIGitHubRef(head: Octokit.PullsListResponseItemHead) {
 	return {
 		label: head.label,
 		ref: head.ref,
@@ -127,8 +97,8 @@ export function convertRESTHeadToIGitHubRef(head: Octokit.PullRequestsGetRespons
 	};
 }
 
-export function convertRESTPullRequestToRawPullRequest(pullRequest: Octokit.PullRequestsCreateResponse | Octokit.PullRequestsGetResponse | Octokit.PullRequestsGetAllResponseItem): PullRequest {
-	let {
+export function convertRESTPullRequestToRawPullRequest(pullRequest: Octokit.PullsCreateResponse | Octokit.PullsGetResponse | Octokit.PullsListResponseItem, githubRepository: GitHubRepository): PullRequest {
+	const {
 		number,
 		body,
 		title,
@@ -141,51 +111,55 @@ export function convertRESTPullRequestToRawPullRequest(pullRequest: Octokit.Pull
 		head,
 		base,
 		labels,
-		node_id
+		node_id,
+		id,
+		draft
 	} = pullRequest;
 
 	const item: PullRequest = {
+			id,
+			graphNodeId: node_id,
 			number,
 			body,
 			title,
 			url: html_url,
-			user: convertRESTUserToAccount(user),
+			user: convertRESTUserToAccount(user, githubRepository),
 			state,
-			merged: (pullRequest as Octokit.PullRequestsGetResponse).merged || false,
-			assignee: assignee ? convertRESTUserToAccount(assignee) : undefined,
+			merged: (pullRequest as Octokit.PullsGetResponse).merged || false,
+			assignee: assignee ? convertRESTUserToAccount(assignee, githubRepository) : undefined,
 			createdAt: created_at,
 			updatedAt: updated_at,
 			head: convertRESTHeadToIGitHubRef(head),
 			base: convertRESTHeadToIGitHubRef(base),
-			mergeable: (pullRequest as Octokit.PullRequestsGetResponse).mergeable,
+			mergeable: (pullRequest as Octokit.PullsGetResponse).mergeable,
 			labels,
-			nodeId: node_id
+			isDraft: draft
 	};
 
 	return item;
 }
 
-export function convertRESTReviewEvent(review: Octokit.PullRequestsCreateReviewResponse): Common.ReviewEvent {
+export function convertRESTReviewEvent(review: Octokit.PullsCreateReviewResponse, githubRepository: GitHubRepository): Common.ReviewEvent {
 	return {
 		event: Common.EventType.Reviewed,
 		comments: [],
 		submittedAt: (review as any).submitted_at, // TODO fix typings upstream
 		body: review.body,
 		htmlUrl: review.html_url,
-		user: convertRESTUserToAccount(review.user),
+		user: convertRESTUserToAccount(review.user, githubRepository),
 		authorAssociation: review.user.type,
 		state: review.state as 'COMMENTED' | 'APPROVED' | 'CHANGES_REQUESTED' | 'PENDING',
 		id: review.id
 	};
 }
 
-export function parseCommentDiffHunk(comment: Comment): DiffHunk[] {
-	let diffHunks = [];
-	let diffHunkReader = parseDiffHunk(comment.diffHunk);
+export function parseCommentDiffHunk(comment: IComment): DiffHunk[] {
+	const diffHunks = [];
+	const diffHunkReader = parseDiffHunk(comment.diffHunk);
 	let diffHunkIter = diffHunkReader.next();
 
 	while (!diffHunkIter.done) {
-		let diffHunk = diffHunkIter.value;
+		const diffHunk = diffHunkIter.value;
 		diffHunks.push(diffHunk);
 		diffHunkIter = diffHunkReader.next();
 	}
@@ -193,7 +167,7 @@ export function parseCommentDiffHunk(comment: Comment): DiffHunk[] {
 	return diffHunks;
 }
 
-export function convertIssuesCreateCommentResponseToComment(comment: Octokit.IssuesCreateCommentResponse | Octokit.IssuesEditCommentResponse): Comment {
+export function convertIssuesCreateCommentResponseToComment(comment: Octokit.IssuesCreateCommentResponse | Octokit.IssuesUpdateCommentResponse, githubRepository: GitHubRepository): IComment {
 	return {
 		url: comment.url,
 		id: comment.id,
@@ -204,7 +178,7 @@ export function convertIssuesCreateCommentResponseToComment(comment: Octokit.Iss
 		commitId: undefined,
 		originalPosition: undefined,
 		originalCommitId: undefined,
-		user: convertRESTUserToAccount(comment.user),
+		user: convertRESTUserToAccount(comment.user, githubRepository),
 		body: comment.body,
 		createdAt: comment.created_at,
 		htmlUrl: comment.html_url,
@@ -212,8 +186,8 @@ export function convertIssuesCreateCommentResponseToComment(comment: Octokit.Iss
 	};
 }
 
-export function convertPullRequestsGetCommentsResponseItemToComment(comment: Octokit.PullRequestsGetCommentsResponseItem | Octokit.PullRequestsEditCommentResponse): Comment {
-	let ret: Comment = {
+export function convertPullRequestsGetCommentsResponseItemToComment(comment: Octokit.PullsListCommentsResponseItem | Octokit.PullsUpdateCommentResponse, githubRepository: GitHubRepository): IComment {
+	const ret: IComment = {
 		url: comment.url,
 		id: comment.id,
 		pullRequestReviewId: comment.pull_request_review_id,
@@ -223,7 +197,7 @@ export function convertPullRequestsGetCommentsResponseItemToComment(comment: Oct
 		commitId: comment.commit_id,
 		originalPosition: comment.original_position,
 		originalCommitId: comment.original_commit_id,
-		user: convertRESTUserToAccount(comment.user),
+		user: convertRESTUserToAccount(comment.user, githubRepository),
 		body: comment.body,
 		createdAt: comment.created_at,
 		htmlUrl: comment.html_url,
@@ -231,14 +205,14 @@ export function convertPullRequestsGetCommentsResponseItemToComment(comment: Oct
 		graphNodeId: comment.node_id
 	};
 
-	let diffHunks = parseCommentDiffHunk(ret);
+	const diffHunks = parseCommentDiffHunk(ret);
 	ret.diffHunks = diffHunks;
 	return ret;
 }
 
 export function convertGraphQLEventType(text: string) {
 	switch (text) {
-		case 'Commit':
+		case 'PullRequestCommit':
 			return Common.EventType.Committed;
 		case 'LabeledEvent':
 			return Common.EventType.Labeled;
@@ -246,6 +220,8 @@ export function convertGraphQLEventType(text: string) {
 			return Common.EventType.Milestoned;
 		case 'AssignedEvent':
 			return Common.EventType.Assigned;
+		case 'HeadRefDeletedEvent':
+			return Common.EventType.HeadRefDeleted;
 		case 'IssueComment':
 			return Common.EventType.Commented;
 		case 'PullRequestReview':
@@ -258,8 +234,8 @@ export function convertGraphQLEventType(text: string) {
 	}
 }
 
-export function parseGraphQLComment(comment: GraphQL.ReviewComment): Comment {
-	const c: Comment = {
+export function parseGraphQLComment(comment: GraphQL.ReviewComment): IComment {
+	const c: IComment = {
 		id: comment.databaseId,
 		url: comment.url,
 		body: comment.body,
@@ -288,7 +264,7 @@ export function parseGraphQLComment(comment: GraphQL.ReviewComment): Comment {
 }
 
 export function parseGraphQLReaction(reactionGroups: GraphQL.ReactionGroup[]): Reaction[] {
-	let reactionConentEmojiMapping = getReactionGroup().reduce((prev, curr) => {
+	const reactionConentEmojiMapping = getReactionGroup().reduce((prev, curr) => {
 		prev[curr.title] = curr;
 		return prev;
 	}, {} as { [key:string] : { title: string; label: string; icon?: vscode.Uri } });
@@ -320,10 +296,20 @@ function parseRef(ref: GraphQL.Ref | undefined): IGitHubRef | undefined {
 	}
 }
 
-export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse): PullRequest {
+function parseAuthor(author: {login: string, url: string, avatarUrl: string}, githubRepository: GitHubRepository): IAccount {
+	return {
+		login: author.login,
+		url: author.url,
+		avatarUrl: githubRepository.isGitHubDotCom ? author.avatarUrl : undefined
+	};
+}
+
+export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse, githubRepository: GitHubRepository): PullRequest {
 	const graphQLPullRequest = pullRequest.repository.pullRequest;
 
 	return {
+		id: graphQLPullRequest.databaseId,
+		graphNodeId: graphQLPullRequest.id,
 		url: graphQLPullRequest.url,
 		number: graphQLPullRequest.number,
 		state: graphQLPullRequest.state,
@@ -334,15 +320,15 @@ export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse
 		updatedAt: graphQLPullRequest.updatedAt,
 		head: parseRef(graphQLPullRequest.headRef),
 		base: parseRef(graphQLPullRequest.baseRef),
-		user: graphQLPullRequest.author,
+		user: parseAuthor(graphQLPullRequest.author, githubRepository),
 		merged: graphQLPullRequest.merged,
 		mergeable: graphQLPullRequest.mergeable === 'MERGEABLE',
-		nodeId: graphQLPullRequest.id,
-		labels: graphQLPullRequest.labels.nodes
+		labels: graphQLPullRequest.labels.nodes,
+		isDraft: graphQLPullRequest.isDraft
 	};
 }
 
-export function parseGraphQLReviewEvent(review: GraphQL.SubmittedReview): Common.ReviewEvent {
+export function parseGraphQLReviewEvent(review: GraphQL.SubmittedReview, githubRepository: GitHubRepository): Common.ReviewEvent {
 	return {
 		event: Common.EventType.Reviewed,
 		comments: review.comments.nodes.map(parseGraphQLComment).filter(c => !c.inReplyToId),
@@ -350,87 +336,101 @@ export function parseGraphQLReviewEvent(review: GraphQL.SubmittedReview): Common
 		body: review.body,
 		bodyHTML: review.bodyHTML,
 		htmlUrl: review.url,
-		user: review.author,
+		user: parseAuthor(review.author, githubRepository),
 		authorAssociation: review.authorAssociation,
 		state: review.state,
 		id: review.databaseId
 	};
 }
 
-export function parseGraphQLTimelineEvents(events: (GraphQL.MergedEvent | GraphQL.Review | GraphQL.IssueComment | GraphQL.Commit | GraphQL.AssignedEvent)[]): Common.TimelineEvent[] {
-	let ret: Common.TimelineEvent[] = [];
+export function parseGraphQLTimelineEvents(events: (GraphQL.MergedEvent | GraphQL.Review | GraphQL.IssueComment | GraphQL.Commit | GraphQL.AssignedEvent | GraphQL.HeadRefDeletedEvent)[], githubRepository: GitHubRepository): Common.TimelineEvent[] {
+	const normalizedEvents: Common.TimelineEvent[] = [];
 	events.forEach(event => {
-		let type = convertGraphQLEventType(event.__typename);
+		const type = convertGraphQLEventType(event.__typename);
 
 		switch (type) {
 			case Common.EventType.Commented:
-				let commentEvent = event as GraphQL.IssueComment;
-				ret.push({
+				const commentEvent = event as GraphQL.IssueComment;
+				normalizedEvents.push({
 					htmlUrl: commentEvent.url,
 					body: commentEvent.body,
 					bodyHTML: commentEvent.bodyHTML,
-					user: commentEvent.author,
+					user: parseAuthor(commentEvent.author, githubRepository),
 					event: type,
 					canEdit: commentEvent.viewerCanUpdate,
 					canDelete: commentEvent.viewerCanDelete,
 					id: commentEvent.databaseId,
 					createdAt: commentEvent.createdAt
-				} as Common.CommentEvent);
+				});
 				return;
 			case Common.EventType.Reviewed:
-				let reviewEvent = event as GraphQL.Review;
-				ret.push({
+				const reviewEvent = event as GraphQL.Review;
+				normalizedEvents.push({
 					event: type,
 					comments: [],
 					submittedAt: reviewEvent.submittedAt,
 					body: reviewEvent.body,
 					bodyHTML: reviewEvent.bodyHTML,
 					htmlUrl: reviewEvent.url,
-					user: reviewEvent.author,
+					user: parseAuthor(reviewEvent.author, githubRepository),
 					authorAssociation: reviewEvent.authorAssociation,
 					state: reviewEvent.state,
 					id: reviewEvent.databaseId,
-				} as Common.ReviewEvent);
+				});
 				return;
 			case Common.EventType.Committed:
-				let commitEv = event as GraphQL.Commit;
-				ret.push({
+				const commitEv = event as GraphQL.Commit;
+				normalizedEvents.push({
+					id: commitEv.databaseId,
 					event: type,
-					sha: commitEv.oid,
-					author: commitEv.author.user || { login: commitEv.committer.name, avatarUrl: commitEv.committer.avatarUrl },
+					sha: commitEv.commit.oid,
+					author: commitEv.commit.author.user ? parseAuthor(commitEv.commit.author.user, githubRepository) : { login: commitEv.commit.committer.name },
 					htmlUrl: commitEv.url,
-					message: commitEv.message
-				} as Common.CommitEvent);
+					message: commitEv.commit.message
+				} as Common.CommitEvent); // TODO remove cast
 				return;
 			case Common.EventType.Merged:
-				let mergeEv = event as GraphQL.MergedEvent;
+				const mergeEv = event as GraphQL.MergedEvent;
 
-				ret.push({
+				normalizedEvents.push({
+					id: mergeEv.databaseId,
 					event: type,
-					user: mergeEv.actor,
+					user: parseAuthor(mergeEv.actor, githubRepository),
 					createdAt: mergeEv.createdAt,
 					mergeRef: mergeEv.mergeRef.name,
 					sha: mergeEv.commit.oid,
 					commitUrl: mergeEv.commit.commitUrl,
 					url: mergeEv.url,
 					graphNodeId: mergeEv.id
-				} as Common.MergedEvent);
+				});
 				return;
 			case Common.EventType.Assigned:
-				let assignEv = event as GraphQL.AssignedEvent;
+				const assignEv = event as GraphQL.AssignedEvent;
 
-				ret.push({
+				normalizedEvents.push({
+					id: assignEv.databaseId,
 					event: type,
 					user: assignEv.user,
 					actor: assignEv.actor
-				} as Common.AssignEvent);
+				});
+				return;
+			case Common.EventType.HeadRefDeleted:
+				const deletedEv = event as GraphQL.HeadRefDeletedEvent;
+
+				normalizedEvents.push({
+					id: deletedEv.id,
+					event: type,
+					actor: deletedEv.actor,
+					createdAt: deletedEv.createdAt,
+					headRef: deletedEv.headRefName
+				});
 				return;
 			default:
 				break;
 		}
 	});
 
-	return ret;
+	return normalizedEvents;
 }
 
 export function convertRESTTimelineEvents(events: any[]): Common.TimelineEvent[] {
@@ -442,6 +442,7 @@ export function convertRESTTimelineEvents(events: any[]): Common.TimelineEvent[]
 		if (event.event === Common.EventType.Reviewed) {
 			event.submittedAt = event.submitted_at;
 			event.htmlUrl = event.html_url;
+			event.authorAssociation = event.user.type;
 		}
 
 		if (event.event === Common.EventType.Committed) {
@@ -453,7 +454,7 @@ export function convertRESTTimelineEvents(events: any[]): Common.TimelineEvent[]
 }
 
 export function getReactionGroup(): { title: string; label: string; icon?: vscode.Uri }[] {
-	let ret = [
+	const ret = [
 		{
 			title: 'CONFUSED',
 			label: '😕',
@@ -493,7 +494,7 @@ export function getReactionGroup(): { title: string; label: string; icon?: vscod
 }
 
 export function getRelatedUsersFromTimelineEvents(timelineEvents: Common.TimelineEvent[]): { login: string; name: string; }[] {
-	let ret: { login: string; name: string; }[] = [];
+	const ret: { login: string; name: string; }[] = [];
 
 	timelineEvents.forEach(event => {
 		if (Common.isCommitEvent(event)) {
