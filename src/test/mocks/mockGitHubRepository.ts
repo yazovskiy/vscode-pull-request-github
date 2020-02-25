@@ -10,11 +10,6 @@ import { UserBuilder } from '../builders/rest/userBuilder';
 import { ManagedGraphQLPullRequestBuilder, ManagedRESTPullRequestBuilder, ManagedPullRequest } from '../builders/managedPullRequestBuilder';
 const queries = require('../../github/queries.gql');
 
-interface IMockGitHubRepositoryOptions {
-	failAuthentication?: boolean;
-	noGraphQL?: boolean;
-}
-
 export class MockGitHubRepository extends GitHubRepository {
 	readonly queryProvider: QueryProvider;
 
@@ -22,7 +17,6 @@ export class MockGitHubRepository extends GitHubRepository {
 		remote: Remote,
 		credentialStore: CredentialStore,
 		sinon: SinonSandbox,
-		private _options: IMockGitHubRepositoryOptions = {},
 	) {
 		super(remote, credentialStore);
 
@@ -31,6 +25,7 @@ export class MockGitHubRepository extends GitHubRepository {
 		this._hub = {
 			octokit: this.queryProvider.octokit,
 			graphql: null,
+			schema: queries,
 		};
 
 		this._metadata = {
@@ -43,10 +38,6 @@ export class MockGitHubRepository extends GitHubRepository {
 
 	async ensure() {
 		return this;
-	}
-
-	get supportsGraphQl() {
-		return !this._options.noGraphQL;
 	}
 
 	query = async <T>(query: QueryOptions): Promise<ApolloQueryResult<T>> => this.queryProvider.emulateGraphQLQuery(query);

@@ -35,6 +35,9 @@ export class PRContext {
 	public refresh = () =>
 		this.postMessage({ command: 'pr.refresh' })
 
+	public checkMergeability = () =>
+		this.postMessage({ command: 'pr.checkMergeability' })
+
 	public merge = (args: { title: string, description: string, method: MergeMethod }) =>
 		this.postMessage({ command: 'pr.merge', args	})
 
@@ -128,15 +131,12 @@ export class PRContext {
 
 	private appendReview({ review, reviewers }: any) {
 		const state = this.pr;
-		let events = state.events;
-		if (state.supportsGraphQl) {
-			events = events.filter(e => !isReviewEvent(e) || e.state.toLowerCase() !== 'pending');
+		const events = state.events.filter(e => !isReviewEvent(e) || e.state.toLowerCase() !== 'pending');
 			events.forEach(event => {
 				if (isReviewEvent(event)) {
 					event.comments.forEach(c => c.isDraft = false);
 				}
 			});
-		}
 		state.reviewers = reviewers;
 		state.events = [
 			...state.events

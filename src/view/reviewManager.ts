@@ -478,7 +478,7 @@ export class ReviewManager {
 	}
 
 	public async switch(pr: PullRequestModel): Promise<void> {
-		Logger.appendLine(`Review> switch to Pull Request #${pr.prNumber} - start`);
+		Logger.appendLine(`Review> switch to Pull Request #${pr.number} - start`);
 		this.statusBarItem.text = '$(sync~spin) Switching to Review Mode';
 		this.statusBarItem.command = undefined;
 		this.statusBarItem.show();
@@ -508,7 +508,7 @@ export class ReviewManager {
 		}
 
 		try {
-			this.statusBarItem.text = `$(sync~spin) Fetching additional data: pr/${pr.prNumber}`;
+			this.statusBarItem.text = `$(sync~spin) Fetching additional data: pr/${pr.number}`;
 			this.statusBarItem.command = undefined;
 			this.statusBarItem.show();
 
@@ -518,10 +518,10 @@ export class ReviewManager {
 				"pr.checkout" : {}
 			*/
 			this._telemetry.sendTelemetryEvent('pr.checkout');
-			Logger.appendLine(`Review> switch to Pull Request #${pr.prNumber} - done`, ReviewManager.ID);
+			Logger.appendLine(`Review> switch to Pull Request #${pr.number} - done`, ReviewManager.ID);
 		} finally {
 			this.switchingToReviewMode = false;
-			this.statusBarItem.text = `Pull Request #${pr.prNumber}`;
+			this.statusBarItem.text = `Pull Request #${pr.number}`;
 			this.statusBarItem.command = undefined;
 			this.statusBarItem.show();
 			await this._repository.status();
@@ -529,7 +529,7 @@ export class ReviewManager {
 	}
 
 	public async publishBranch(branch: Branch): Promise<Branch | undefined> {
-		const potentialTargetRemotes = this._prManager.getGitHubRemotes();
+		const potentialTargetRemotes = this._prManager.getAllGitHubRemotes();
 		const selectedRemote = (await this.getRemote(potentialTargetRemotes, `Pick a remote to publish the branch '${branch.name}' to:`))!.remote;
 
 		if (!selectedRemote || branch.name === undefined) {
@@ -713,7 +713,7 @@ export class ReviewManager {
 		const pullRequestDefaults = await this._prManager.getPullRequestDefaults();
 		const githubRemotes = this._prManager.getGitHubRemotes();
 		const targetRemote = await this.getRemote(githubRemotes, 'Select the remote to send the pull request to',
-			new RemoteQuickPickItem(pullRequestDefaults.owner, pullRequestDefaults.repo, 'Parent Fork')
+			new RemoteQuickPickItem(pullRequestDefaults.owner, pullRequestDefaults.repo, 'Parent Repository')
 		);
 
 		if (!targetRemote) {
@@ -758,7 +758,7 @@ export class ReviewManager {
 
 			}
 
-			const headRemote = githubRemotes.find(remote => remote.remoteName === HEAD!.upstream!.remote);
+			const headRemote = this._prManager.getAllGitHubRemotes().find(remote => remote.remoteName === HEAD!.upstream!.remote);
 			if (!headRemote) {
 				return;
 			}
@@ -813,7 +813,7 @@ export class ReviewManager {
 			const pullRequestModel = await this._prManager.createPullRequest(createParams);
 
 			if (pullRequestModel) {
-				progress.report({ increment: 30, message: `Pull Request #${pullRequestModel.prNumber} Created` });
+				progress.report({ increment: 30, message: `Pull Request #${pullRequestModel.number} Created` });
 				await this.updateState();
 				await vscode.commands.executeCommand('pr.openDescription');
 				progress.report({ increment: 30 });

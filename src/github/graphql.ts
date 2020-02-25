@@ -205,14 +205,30 @@ export interface PullRequestCommentsResponse {
 export interface MentionableUsersResponse {
 	repository: {
 		mentionableUsers: {
-			nodes: [
-				{
-					login: string;
-					avatarUrl: string;
-					name: string;
-					url: string;
-				}
-			];
+			nodes: {
+				login: string;
+				avatarUrl: string;
+				name: string;
+				url: string;
+			}[];
+			pageInfo: {
+				hasNextPage: boolean;
+				endCursor: string;
+			};
+		}
+	};
+	rateLimit: RateLimit;
+}
+
+export interface AssignableUsersResponse {
+	repository: {
+		assignableUsers: {
+			nodes: {
+				login: string;
+				avatarUrl: string;
+				name: string;
+				url: string;
+			}[];
 			pageInfo: {
 				hasNextPage: boolean;
 				endCursor: string;
@@ -228,9 +244,23 @@ export interface AddCommentResponse {
 	};
 }
 
+export interface AddIssueCommentResponse {
+	addComment: {
+		commentEdge: {
+			node: IssueComment
+		}
+	};
+}
+
 export interface EditCommentResponse {
 	updatePullRequestReviewComment: {
 		pullRequestReviewComment: ReviewComment;
+	};
+}
+
+export interface EditIssueCommentResponse {
+	updateIssueComment: {
+		issueComment: IssueComment;
 	};
 }
 
@@ -287,6 +317,16 @@ export interface DeleteReactionResponse {
 	};
 }
 
+export interface UpdatePullRequestResponse {
+	updatePullRequest: {
+		pullRequest: {
+			body: string;
+			bodyHTML: string;
+			title: string;
+		};
+	};
+}
+
 export interface Ref {
 	name: string;
 	repository: {
@@ -300,37 +340,93 @@ export interface Ref {
 	};
 }
 
+export interface SuggestedReviewerResponse {
+	isAuthor: boolean;
+	isCommenter: boolean;
+	reviewer: {
+		login: string;
+		avatarUrl: string;
+		name: string;
+		url: string;
+	};
+}
+
+export interface PullRequest {
+	id: string;
+	databaseId: number;
+	number: number;
+	url: string;
+	state: 'OPEN' | 'CLOSED' | 'MERGED';
+	body: string;
+	bodyHTML: string;
+	title: string;
+	author: {
+		login: string;
+		url: string;
+		avatarUrl: string;
+	};
+	createdAt: string;
+	updatedAt: string;
+	headRef?: Ref;
+	baseRef?: Ref;
+	labels: {
+		nodes: {
+			name: string;
+		}[];
+	};
+	merged: boolean;
+	mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
+	isDraft?: boolean;
+	suggestedReviewers: SuggestedReviewerResponse[];
+	milestone?: {
+		title: string,
+		dueOn?: string,
+		id: string,
+		createdAt: string
+	};
+}
+
 export interface PullRequestResponse {
 	repository: {
-		pullRequest: {
-			id: string;
-			databaseId: number;
-			number: number;
-			url: string;
-			state: 'OPEN' | 'CLOSED' | 'MERGED';
-			body: string;
-			bodyHTML: string;
-			title: string;
-			author: {
-				login: string;
-				url: string;
-				avatarUrl: string;
-			}
-			createdAt: string;
-			updatedAt: string;
-			headRef?: Ref;
-			baseRef?: Ref;
-			labels: {
-				nodes: {
-					name: string;
-				}[],
-			}
-			merged: boolean;
-			mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
-			isDraft: boolean;
-		}
+		pullRequest: PullRequest;
 	};
 	rateLimit: RateLimit;
+}
+
+export interface PullRequestSearchResponse {
+	search: {
+		issueCount: number,
+		pageInfo: {
+			hasNextPage: boolean
+			endCursor: string
+		},
+		edges: {
+			node: PullRequest
+		}[]
+	};
+	rateLimit: RateLimit;
+}
+
+export interface MilestoneIssuesResponse {
+	repository: {
+		milestones: {
+			nodes: {
+				dueOn: string,
+				createdAt: string,
+				title: string,
+				id: string,
+				issues: {
+					edges: {
+						node: PullRequest
+					}[]
+				}
+			}[],
+			pageInfo: {
+				hasNextPage: boolean;
+				endCursor: string;
+			}
+		}
+	};
 }
 
 export interface QueryWithRateLimit {
@@ -341,4 +437,30 @@ export interface RateLimit {
 	cost: number;
 	remaining: number;
 	resetAt: string;
+}
+
+export interface ContributionsCollection {
+	commitContributionsByRepository: {
+		contributions: {
+			nodes: {
+				occurredAt: string;
+			}[];
+		};
+		repository: {
+			nameWithOwner: string;
+		};
+	}[];
+}
+
+export interface UserResponse {
+	user: {
+		login: string;
+		avatarUrl?: string;
+		bio?: string;
+		company?: string;
+		location?: string;
+		name: string;
+		contributionsCollection: ContributionsCollection;
+		url: string;
+	};
 }

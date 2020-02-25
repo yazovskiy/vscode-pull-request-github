@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import Octokit = require('@octokit/rest');
-import { ApolloClient, InMemoryCache, NormalizedCacheObject, gql } from 'apollo-boost';
+import { ApolloClient, InMemoryCache, NormalizedCacheObject } from 'apollo-boost';
 import { setContext } from 'apollo-link-context';
 import * as vscode from 'vscode';
 import { agent } from '../common/net';
@@ -18,6 +18,8 @@ import { handler as uriHandler } from '../common/uri';
 import { createHttpLink } from 'apollo-link-http';
 import fetch from 'node-fetch';
 import { ITelemetry } from '../common/telemetry';
+const defaultSchema = require('./queries.gql');
+const enterpriseSchema = require('./enterprise.gql');
 
 const TRY_AGAIN = 'Try again?';
 const SIGNIN_COMMAND = 'Sign in';
@@ -29,6 +31,7 @@ const AUTH_INPUT_TOKEN_CMD = 'auth.inputTokenCallback';
 export interface GitHub {
 	octokit: Octokit;
 	graphql: ApolloClient<NormalizedCacheObject> | null;
+	schema: any | null;
 }
 
 export class CredentialStore implements vscode.Disposable {
@@ -218,8 +221,28 @@ export class CredentialStore implements vscode.Disposable {
 			}
 		});
 
+		// detect which schema to use, currently only supports github.com & enterprise
+		let version = '';
+		const resp = await octokit.request('GET /');
+		if ('x-github-enterprise-version' in resp.headers) {
+			version = resp.headers['x-github-enterprise-version'];
+		}
+		let schema;
+		if (version === '') {
+			// use default github.com schema
+			schema = defaultSchema;
+		} else {
+			schema = enterpriseSchema;
+		}
+
+		let graphQLBaseURL = baseUrl;
+		if (graphQLBaseURL.endsWith('/api/v3')) {
+			// handles github enterprise
+			graphQLBaseURL = baseUrl.replace('/v3', '');
+		}
+
 		const graphql = new ApolloClient({
-			link: link(baseUrl, creds.token || ''),
+			link: link(graphQLBaseURL, creds.token || ''),
 			cache: new InMemoryCache,
 			defaultOptions: {
 				query: {
@@ -228,28 +251,10 @@ export class CredentialStore implements vscode.Disposable {
 			}
 		});
 
-		let supportsGraphQL = true;
-		await graphql.query({ query: gql`query { viewer { login } }` })
-			.then(result => {
-				Logger.appendLine(`${baseUrl}: GraphQL support detected`);
-
-				/* __GDPR__
-					"auth.graphql.supported" : {}
-				*/
-				this._telemetry.sendTelemetryEvent('auth.graphql.supported');
-			})
-			.catch(err => {
-				Logger.appendLine(`${baseUrl}: GraphQL not supported (${err.message})`);
-				/* __GDPR__
-					"auth.graphql.unsupported" : {}
-				*/
-				this._telemetry.sendTelemetryEvent('auth.graphql.unsupported');
-				supportsGraphQL = false;
-			});
-
 		return {
 			octokit,
-			graphql: supportsGraphQL ? graphql : null,
+			graphql,
+			schema: schema,
 		};
 	}
 

@@ -15,10 +15,16 @@ export enum ReviewEvent {
 	Comment = 'COMMENT'
 }
 
-export enum PullRequestStateEnum {
+export enum GithubItemStateEnum {
 	Open,
 	Merged,
 	Closed,
+}
+
+export enum PullRequestMergeability {
+	Mergeable,
+	NotMergeable,
+	Unknown
 }
 
 export interface ReviewState {
@@ -31,6 +37,18 @@ export interface IAccount {
 	name?: string;
 	avatarUrl?: string;
 	url: string;
+}
+
+export interface ISuggestedReviewer extends IAccount {
+	isAuthor: boolean;
+	isCommenter: boolean;
+}
+
+export interface IMilestone {
+	title: string;
+	dueOn?: string | null;
+	createdAt: string;
+	id: string;
 }
 
 export interface MergePullRequest {
@@ -55,7 +73,7 @@ export interface ILabel {
 	name: string;
 }
 
-export interface PullRequest {
+export interface Issue {
 	id: number;
 	graphNodeId: string;
 	url: string;
@@ -67,13 +85,18 @@ export interface PullRequest {
 	assignee?: IAccount;
 	createdAt: string;
 	updatedAt: string;
-	head?: IGitHubRef;
-	base?: IGitHubRef;
 	user: IAccount;
 	labels: ILabel[];
-	merged: boolean;
-	mergeable?: boolean;
-	isDraft: boolean;
+	milestone?: IMilestone;
+}
+
+export interface PullRequest extends Issue {
+	isDraft?: boolean;
+	head?: IGitHubRef;
+	base?: IGitHubRef;
+	merged?: boolean;
+	mergeable?: PullRequestMergeability;
+	suggestedReviewers?: ISuggestedReviewer[];
 }
 
 export interface IRawFileChange {
@@ -107,3 +130,13 @@ export type RepoAccessAndMergeMethods = {
 	hasWritePermission: boolean;
 	mergeMethodsAvailability: MergeMethodsAvailability
 };
+
+export interface User extends IAccount {
+	company?: string;
+	location?: string;
+	bio?: string;
+	commitContributions: {
+		createdAt: Date;
+		repoNameWithOwner: string;
+	}[];
+}

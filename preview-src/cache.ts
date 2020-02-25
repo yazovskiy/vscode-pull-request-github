@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { vscode } from './message';
-import { PullRequestStateEnum, IAccount, ReviewState, ILabel, MergeMethod, MergeMethodsAvailability } from '../src/github/interface';
+import { GithubItemStateEnum, IAccount, ReviewState, ILabel, MergeMethod, MergeMethodsAvailability, PullRequestMergeability } from '../src/github/interface';
 import { TimelineEvent } from '../src/common/timelineEvent';
 import { ReposGetCombinedStatusForRefResponse } from '@octokit/rest';
 
@@ -16,7 +16,7 @@ export interface PullRequest {
 	body: string;
 	bodyHTML?: string;
 	author: IAccount;
-	state: PullRequestStateEnum;
+	state: GithubItemStateEnum;
 	events: TimelineEvent[];
 	isCurrentlyCheckedOut: boolean;
 	base: string;
@@ -24,6 +24,9 @@ export interface PullRequest {
 	labels: ILabel[];
 	commitsCount: number;
 	repositoryDefaultBranch: any;
+	/**
+	 * User can edit PR title and description (author or user with push access)
+	 */
 	canEdit: boolean;
 	/**
 	 * Users with push access to repo have rights to merge/close PRs,
@@ -33,12 +36,12 @@ export interface PullRequest {
 	pendingCommentText?: string;
 	pendingCommentDrafts?: { [key: string]: string; };
 	status: ReposGetCombinedStatusForRefResponse;
-	mergeable: boolean;
+	mergeable: PullRequestMergeability;
 	defaultMergeMethod: MergeMethod;
 	mergeMethodsAvailability: MergeMethodsAvailability;
-	supportsGraphQl: boolean;
 	reviewers: ReviewState[];
-	isDraft: boolean;
+	isDraft?: boolean;
+	isIssue: boolean;
 }
 
 export function getState(): PullRequest {

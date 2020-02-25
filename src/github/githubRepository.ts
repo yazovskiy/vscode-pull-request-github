@@ -7,22 +7,36 @@ import * as vscode from 'vscode';
 import Octokit = require('@octokit/rest');
 import Logger from '../common/logger';
 import { Remote, parseRemote } from '../common/remote';
-import { IAccount, RepoAccessAndMergeMethods } from './interface';
+import { IAccount, RepoAccessAndMergeMethods, PullRequestMergeability, IMilestone } from './interface';
 import { PullRequestModel } from './pullRequestModel';
 import { CredentialStore, GitHub } from './credentials';
 import { AuthenticationError } from '../common/authentication';
 import { QueryOptions, MutationOptions, ApolloQueryResult, NetworkStatus, FetchResult } from 'apollo-boost';
 import { PRCommentController } from '../view/prCommentController';
-import { convertRESTPullRequestToRawPullRequest, parseGraphQLPullRequest } from './utils';
-import { PullRequestResponse, MentionableUsersResponse } from './graphql';
-const queries = require('./queries.gql');
+import { convertRESTPullRequestToRawPullRequest, parseMergeability, parseGraphQLPullRequest, parseGraphQLIssue, parseMilestone } from './utils';
+import { PullRequestResponse, MentionableUsersResponse, AssignableUsersResponse, MilestoneIssuesResponse } from './graphql';
+import { IssueModel } from './issueModel';
 
 export const PULL_REQUEST_PAGE_SIZE = 20;
 
 const GRAPHQL_COMPONENT_ID = 'GraphQL';
 
-export interface PullRequestData {
-	pullRequests: PullRequestModel[];
+export interface ItemsData {
+	items: any[];
+	hasMorePages: boolean;
+}
+
+export interface IssueData extends ItemsData {
+	items: IssueModel[];
+	hasMorePages: boolean;
+}
+
+export interface PullRequestData extends IssueData {
+	items: PullRequestModel[];
+}
+
+export interface MilestoneData extends ItemsData {
+	items: { milestone: IMilestone, issues: IssueModel[] }[];
 	hasMorePages: boolean;
 }
 
@@ -80,10 +94,6 @@ export class GitHubRepository implements vscode.Disposable {
 		this.isGitHubDotCom = remote.host.toLowerCase() === 'github.com';
 	}
 
-	get supportsGraphQl(): boolean {
-		return !!(this.hub && this.hub.graphql);
-	}
-
 	query = async <T>(query: QueryOptions): Promise<ApolloQueryResult<T>> => {
 		const gql = this.hub && this.hub.graphql;
 		if (!gql) {
@@ -118,6 +128,10 @@ export class GitHubRepository implements vscode.Disposable {
 		const rsp = await gql.mutate<T>(mutation);
 		Logger.debug(`Response: ${JSON.stringify(rsp, null, 2)}`, GRAPHQL_COMPONENT_ID);
 		return rsp;
+	}
+
+	get schema() {
+		return this.hub.schema;
 	}
 
 	async getMetadata(): Promise<any> {
@@ -226,7 +240,7 @@ export class GitHubRepository implements vscode.Disposable {
 				// Log a warning and return an empty set.
 				Logger.appendLine(`Warning: no result data for ${remote.owner}/${remote.repositoryName} Status: ${result.status}`);
 				return {
-					pullRequests: [],
+					items: [],
 					hasMorePages: false,
 				};
 			}
@@ -248,7 +262,7 @@ export class GitHubRepository implements vscode.Disposable {
 
 			Logger.debug(`Fetch all pull requests - done`, GitHubRepository.ID);
 			return {
-				pullRequests,
+				items: pullRequests,
 				hasMorePages
 			};
 		} catch (e) {
@@ -259,6 +273,43 @@ export class GitHubRepository implements vscode.Disposable {
 			} else {
 				throw e;
 			}
+		}
+	}
+
+	async getIssuesForUserByMilestone(page?: number): Promise<MilestoneData | undefined> {
+		try {
+			Logger.debug(`Fetch all issues - enter`, GitHubRepository.ID);
+			const { query, remote, schema } = await this.ensure();
+			const { data } = await query<MilestoneIssuesResponse>({
+				query: schema.GetMilestones,
+				variables: {
+					owner: remote.owner,
+					name: remote.repositoryName,
+					assignee: this._credentialStore.getCurrentUser(remote).login
+				}
+			});
+			Logger.debug(`Fetch all issues - done`, GitHubRepository.ID);
+
+			const milestones: {milestone: IMilestone, issues: IssueModel[] }[] = [];
+			if (data && data.repository.milestones && data.repository.milestones.nodes) {
+				data.repository.milestones.nodes.forEach(raw => {
+					const milestone = parseMilestone(raw);
+					if (milestone) {
+						const issues: IssueModel[] = [];
+						raw.issues.edges.forEach(issue => {
+							issues.push(new IssueModel(this, remote, parseGraphQLIssue(issue.node, this)));
+						});
+						milestones.push({ milestone, issues });
+					}
+				});
+			}
+			return {
+				items: milestones,
+				hasMorePages: data.repository.milestones.pageInfo.hasNextPage
+			};
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to fetch issues: ${e}`);
+			return;
 		}
 	}
 
@@ -301,7 +352,7 @@ export class GitHubRepository implements vscode.Disposable {
 			Logger.debug(`Fetch pull request category ${categoryQuery} - done`, GitHubRepository.ID);
 
 			return {
-				pullRequests,
+				items: pullRequests,
 				hasMorePages
 			};
 		} catch (e) {
@@ -318,38 +369,65 @@ export class GitHubRepository implements vscode.Disposable {
 	async getPullRequest(id: number): Promise<PullRequestModel | undefined> {
 		try {
 			Logger.debug(`Fetch pull request ${id} - enter`, GitHubRepository.ID);
-			const { octokit, query, remote, supportsGraphQl } = await this.ensure();
+			const { query, remote, schema } = await this.ensure();
 
-			if (supportsGraphQl) {
-				const { data } = await query<PullRequestResponse>({
-					query: queries.PullRequest,
-					variables: {
-						owner: remote.owner,
-						name: remote.repositoryName,
-						number: id
-					}
-				});
-				Logger.debug(`Fetch pull request ${id} - done`, GitHubRepository.ID);
-
-				return new PullRequestModel(this, remote, parseGraphQLPullRequest(data, this));
-			} else {
-				const { data } = await octokit.pulls.get({
+			const { data } = await query<PullRequestResponse>({
+				query: schema.PullRequest,
+				variables: {
 					owner: remote.owner,
-					repo: remote.repositoryName,
+					name: remote.repositoryName,
 					number: id
-				});
-				Logger.debug(`Fetch pull request ${id} - done`, GitHubRepository.ID);
-
-				if (!data.head.repo) {
-					Logger.appendLine('The remote branch for this PR was already deleted.', GitHubRepository.ID);
-					return;
 				}
+			});
+			Logger.debug(`Fetch pull request ${id} - done`, GitHubRepository.ID);
 
-				return new PullRequestModel(this, remote, convertRESTPullRequestToRawPullRequest(data, this));
-			}
+			return new PullRequestModel(this, remote, parseGraphQLPullRequest(data, this));
 		} catch (e) {
 			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
 			return;
+		}
+	}
+
+	async getIssue(id: number): Promise<IssueModel | undefined> {
+		try {
+			Logger.debug(`Fetch issue ${id} - enter`, GitHubRepository.ID);
+			const { query, remote, schema } = await this.ensure();
+
+			const { data } = await query<PullRequestResponse>({
+				query: schema.Issue,
+				variables: {
+					owner: remote.owner,
+					name: remote.repositoryName,
+					number: id
+				}
+			});
+			Logger.debug(`Fetch issue ${id} - done`, GitHubRepository.ID);
+
+			return new IssueModel(this, remote, parseGraphQLPullRequest(data, this));
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
+			return;
+		}
+	}
+
+	async getPullRequestMergeability(id: number): Promise<PullRequestMergeability> {
+		try {
+			Logger.debug(`Fetch pull request mergeability ${id} - enter`, GitHubRepository.ID);
+			const { query, remote, schema } = await this.ensure();
+
+			const { data } = await query<PullRequestResponse>({
+				query: schema.PullRequestMergeability,
+				variables: {
+					owner: remote.owner,
+					name: remote.repositoryName,
+					number: id
+				}
+			});
+			Logger.debug(`Fetch pull request mergeability ${id} - done`, GitHubRepository.ID);
+			return parseMergeability(data.repository.pullRequest.mergeable);
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to fetch PR Mergeability: ${e}`);
+			return PullRequestMergeability.Unknown;
 		}
 	}
 
@@ -374,46 +452,82 @@ export class GitHubRepository implements vscode.Disposable {
 
 	async getMentionableUsers(): Promise<IAccount[]> {
 		Logger.debug(`Fetch mentionable users - enter`, GitHubRepository.ID);
-		const { query, supportsGraphQl, remote } = await this.ensure();
+		const { query, remote, schema } = await this.ensure();
 
-		if (supportsGraphQl) {
-			let after = null;
-			let hasNextPage = false;
-			const ret: IAccount[] = [];
+		let after = null;
+		let hasNextPage = false;
+		const ret: IAccount[] = [];
 
-			do {
-				try {
-					const result: { data: MentionableUsersResponse } = await query<MentionableUsersResponse>({
-						query: queries.GetMentionableUsers,
-						variables: {
-							owner: remote.owner,
-							name: remote.repositoryName,
-							first: 100,
-							after: after
-						}
-					});
+		do {
+			try {
+				const result: { data: MentionableUsersResponse } = await query<MentionableUsersResponse>({
+					query: schema.GetMentionableUsers,
+					variables: {
+						owner: remote.owner,
+						name: remote.repositoryName,
+						first: 100,
+						after: after
+					}
+				});
 
-					ret.push(...result.data.repository.mentionableUsers.nodes.map(node => {
-						return {
-							login: node.login,
-							avatarUrl: node.avatarUrl,
-							name: node.name,
-							url: node.url
-						};
-					}));
+				ret.push(...result.data.repository.mentionableUsers.nodes.map(node => {
+					return {
+						login: node.login,
+						avatarUrl: node.avatarUrl,
+						name: node.name,
+						url: node.url
+					};
+				}));
 
-					hasNextPage = result.data.repository.mentionableUsers.pageInfo.hasNextPage;
-					after = result.data.repository.mentionableUsers.pageInfo.endCursor;
-				} catch (e) {
-					Logger.debug(`Unable to fetch mentionable users: ${e}`, GitHubRepository.ID);
-					return ret;
-				}
-			} while (hasNextPage);
+				hasNextPage = result.data.repository.mentionableUsers.pageInfo.hasNextPage;
+				after = result.data.repository.mentionableUsers.pageInfo.endCursor;
+			} catch (e) {
+				Logger.debug(`Unable to fetch mentionable users: ${e}`, GitHubRepository.ID);
+				return ret;
+			}
+		} while (hasNextPage);
 
-			return ret;
-		}
+		return ret;
+	}
 
-		return [];
+	async getAssignableUsers(): Promise<IAccount[]> {
+		Logger.debug(`Fetch assignable users - enter`, GitHubRepository.ID);
+		const { query, remote, schema } = await this.ensure();
+
+		let after = null;
+		let hasNextPage = false;
+		const ret: IAccount[] = [];
+
+		do {
+			try {
+				const result: { data: AssignableUsersResponse } = await query<AssignableUsersResponse>({
+					query: schema.GetAssignableUsers,
+					variables: {
+						owner: remote.owner,
+						name: remote.repositoryName,
+						first: 100,
+						after: after
+					}
+				});
+
+				ret.push(...result.data.repository.assignableUsers.nodes.map(node => {
+					return {
+						login: node.login,
+						avatarUrl: node.avatarUrl,
+						name: node.name,
+						url: node.url
+					};
+				}));
+
+				hasNextPage = result.data.repository.assignableUsers.pageInfo.hasNextPage;
+				after = result.data.repository.assignableUsers.pageInfo.endCursor;
+			} catch (e) {
+				Logger.debug(`Unable to fetch assignable users: ${e}`, GitHubRepository.ID);
+				return ret;
+			}
+		} while (hasNextPage);
+
+		return ret;
 	}
 
 	private getPRFetchQuery(repo: string, user: string, query: string) {

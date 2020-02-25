@@ -6,7 +6,7 @@
 
 import * as Octokit from '@octokit/rest';
 import * as vscode from 'vscode';
-import { IAccount, PullRequest, IGitHubRef } from './interface';
+import { IAccount, PullRequest, IGitHubRef, PullRequestMergeability, ISuggestedReviewer, IMilestone, User, Issue } from './interface';
 import { IComment, Reaction } from '../common/comment';
 import { parseDiffHunk, DiffHunk } from '../common/diffHunk';
 import * as Common from '../common/timelineEvent';
@@ -117,23 +117,59 @@ export function convertRESTPullRequestToRawPullRequest(pullRequest: Octokit.Pull
 	} = pullRequest;
 
 	const item: PullRequest = {
-			id,
-			graphNodeId: node_id,
-			number,
-			body,
-			title,
-			url: html_url,
-			user: convertRESTUserToAccount(user, githubRepository),
-			state,
-			merged: (pullRequest as Octokit.PullsGetResponse).merged || false,
-			assignee: assignee ? convertRESTUserToAccount(assignee, githubRepository) : undefined,
-			createdAt: created_at,
-			updatedAt: updated_at,
-			head: convertRESTHeadToIGitHubRef(head),
-			base: convertRESTHeadToIGitHubRef(base),
-			mergeable: (pullRequest as Octokit.PullsGetResponse).mergeable,
-			labels,
-			isDraft: draft
+		id,
+		graphNodeId: node_id,
+		number,
+		body,
+		title,
+		url: html_url,
+		user: convertRESTUserToAccount(user, githubRepository),
+		state,
+		merged: (pullRequest as Octokit.PullsGetResponse).merged || false,
+		assignee: assignee ? convertRESTUserToAccount(assignee, githubRepository) : undefined,
+		createdAt: created_at,
+		updatedAt: updated_at,
+		head: convertRESTHeadToIGitHubRef(head),
+		base: convertRESTHeadToIGitHubRef(base),
+		mergeable: (pullRequest as Octokit.PullsGetResponse).mergeable ? PullRequestMergeability.Mergeable : PullRequestMergeability.NotMergeable,
+		labels,
+		isDraft: draft,
+		suggestedReviewers: [] // suggested reviewers only available through GraphQL API
+	};
+
+	return item;
+}
+
+export function convertRESTIssueToRawPullRequest(pullRequest: Octokit.IssuesCreateResponse | Octokit.IssuesGetResponse | Octokit.IssuesListResponseItem, githubRepository: GitHubRepository): PullRequest {
+	const {
+		number,
+		body,
+		title,
+		html_url,
+		user,
+		state,
+		assignee,
+		created_at,
+		updated_at,
+		labels,
+		node_id,
+		id,
+	} = pullRequest;
+
+	const item: PullRequest = {
+		id,
+		graphNodeId: node_id,
+		number,
+		body,
+		title,
+		url: html_url,
+		user: convertRESTUserToAccount(user, githubRepository),
+		state,
+		assignee: assignee ? convertRESTUserToAccount(assignee, githubRepository) : undefined,
+		createdAt: created_at,
+		updatedAt: updated_at,
+		labels,
+		suggestedReviewers: [] // suggested reviewers only available through GraphQL API
 	};
 
 	return item;
@@ -165,25 +201,6 @@ export function parseCommentDiffHunk(comment: IComment): DiffHunk[] {
 	}
 
 	return diffHunks;
-}
-
-export function convertIssuesCreateCommentResponseToComment(comment: Octokit.IssuesCreateCommentResponse | Octokit.IssuesUpdateCommentResponse, githubRepository: GitHubRepository): IComment {
-	return {
-		url: comment.url,
-		id: comment.id,
-		diffHunk: '',
-		diffHunks: [],
-		path: undefined,
-		position: undefined,
-		commitId: undefined,
-		originalPosition: undefined,
-		originalCommitId: undefined,
-		user: convertRESTUserToAccount(comment.user, githubRepository),
-		body: comment.body,
-		createdAt: comment.created_at,
-		htmlUrl: comment.html_url,
-		graphNodeId: comment.node_id
-	};
 }
 
 export function convertPullRequestsGetCommentsResponseItemToComment(comment: Octokit.PullsListCommentsResponseItem | Octokit.PullsUpdateCommentResponse, githubRepository: GitHubRepository): IComment {
@@ -239,6 +256,7 @@ export function parseGraphQLComment(comment: GraphQL.ReviewComment): IComment {
 		id: comment.databaseId,
 		url: comment.url,
 		body: comment.body,
+		bodyHTML: comment.bodyHTML,
 		path: comment.path,
 		canEdit: comment.viewerCanDelete,
 		canDelete: comment.viewerCanDelete,
@@ -263,11 +281,27 @@ export function parseGraphQLComment(comment: GraphQL.ReviewComment): IComment {
 	return c;
 }
 
+export function parseGraphQlIssueComment(comment: GraphQL.IssueComment): IComment {
+	return {
+		id: comment.databaseId,
+		url: comment.url,
+		body: comment.body,
+		bodyHTML: comment.bodyHTML,
+		canEdit: comment.viewerCanDelete,
+		canDelete: comment.viewerCanDelete,
+		user: comment.author,
+		createdAt: comment.createdAt,
+		htmlUrl: comment.url,
+		graphNodeId: comment.id,
+		diffHunk: ''
+	};
+}
+
 export function parseGraphQLReaction(reactionGroups: GraphQL.ReactionGroup[]): Reaction[] {
 	const reactionConentEmojiMapping = getReactionGroup().reduce((prev, curr) => {
 		prev[curr.title] = curr;
 		return prev;
-	}, {} as { [key:string] : { title: string; label: string; icon?: vscode.Uri } });
+	}, {} as { [key: string]: { title: string; label: string; icon?: vscode.Uri } });
 
 	const reactions = reactionGroups.filter(group => group.users.totalCount > 0).map(group => {
 		const reaction: Reaction = {
@@ -296,12 +330,39 @@ function parseRef(ref: GraphQL.Ref | undefined): IGitHubRef | undefined {
 	}
 }
 
-function parseAuthor(author: {login: string, url: string, avatarUrl: string}, githubRepository: GitHubRepository): IAccount {
+function parseAuthor(author: { login: string, url: string, avatarUrl: string } | null, githubRepository: GitHubRepository): IAccount {
+	if (author) {
+		return {
+			login: author.login,
+			url: author.url,
+			avatarUrl: githubRepository.isGitHubDotCom ? author.avatarUrl : undefined
+		};
+	} else {
+		return {
+			login: '',
+			url: ''
+		};
+	}
+}
+
+export function parseMilestone(milestone: { title: string, dueOn?: string, createdAt: string, id: string } | undefined): IMilestone | undefined {
+	if (!milestone) {
+		return undefined;
+	}
 	return {
-		login: author.login,
-		url: author.url,
-		avatarUrl: githubRepository.isGitHubDotCom ? author.avatarUrl : undefined
+		title: milestone.title,
+		dueOn: milestone.dueOn,
+		createdAt: milestone.createdAt,
+		id: milestone.id
 	};
+}
+
+export function parseMergeability(mergability: 'UNKNOWN' | 'MERGEABLE' | 'CONFLICTING'): PullRequestMergeability {
+	switch (mergability) {
+		case 'UNKNOWN': return PullRequestMergeability.Unknown;
+		case 'MERGEABLE': return PullRequestMergeability.Mergeable;
+		case 'CONFLICTING': return PullRequestMergeability.NotMergeable;
+	}
 }
 
 export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse, githubRepository: GitHubRepository): PullRequest {
@@ -322,10 +383,80 @@ export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse
 		base: parseRef(graphQLPullRequest.baseRef),
 		user: parseAuthor(graphQLPullRequest.author, githubRepository),
 		merged: graphQLPullRequest.merged,
-		mergeable: graphQLPullRequest.mergeable === 'MERGEABLE',
+		mergeable: parseMergeability(graphQLPullRequest.mergeable),
 		labels: graphQLPullRequest.labels.nodes,
-		isDraft: graphQLPullRequest.isDraft
+		isDraft: graphQLPullRequest.isDraft,
+		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers)
 	};
+}
+
+export function parseGraphQLIssue(issue: GraphQL.PullRequest, githubRepository: GitHubRepository): Issue {
+	return {
+		id: issue.databaseId,
+		graphNodeId: issue.id,
+		url: issue.url,
+		number: issue.number,
+		state: issue.state,
+		body: issue.body,
+		bodyHTML: issue.bodyHTML,
+		title: issue.title,
+		createdAt: issue.createdAt,
+		updatedAt: issue.updatedAt,
+		user: parseAuthor(issue.author, githubRepository),
+		labels: issue.labels.nodes
+	};
+}
+
+export function parseGraphQLSearchRequest(pullRequest: GraphQL.PullRequest, githubRepository: GitHubRepository): PullRequest {
+	const graphQLPullRequest = pullRequest;
+
+	return {
+		id: graphQLPullRequest.databaseId,
+		graphNodeId: graphQLPullRequest.id,
+		url: graphQLPullRequest.url,
+		number: graphQLPullRequest.number,
+		state: graphQLPullRequest.state,
+		body: graphQLPullRequest.body,
+		bodyHTML: graphQLPullRequest.bodyHTML,
+		title: graphQLPullRequest.title,
+		createdAt: graphQLPullRequest.createdAt,
+		updatedAt: graphQLPullRequest.updatedAt,
+		head: parseRef(graphQLPullRequest.headRef),
+		base: parseRef(graphQLPullRequest.baseRef),
+		user: parseAuthor(graphQLPullRequest.author, githubRepository),
+		merged: graphQLPullRequest.merged,
+		mergeable: parseMergeability(graphQLPullRequest.mergeable),
+		labels: graphQLPullRequest.labels.nodes,
+		isDraft: graphQLPullRequest.isDraft,
+		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers),
+		milestone: parseMilestone(graphQLPullRequest.milestone)
+	};
+}
+
+function parseSuggestedReviewers(suggestedReviewers: GraphQL.SuggestedReviewerResponse[] | undefined): ISuggestedReviewer[] {
+	if (!suggestedReviewers) {
+		return [];
+	}
+	const ret: ISuggestedReviewer[] = suggestedReviewers.map(suggestedReviewer => {
+		return {
+			login: suggestedReviewer.reviewer.login,
+			avatarUrl: suggestedReviewer.reviewer.avatarUrl,
+			name: suggestedReviewer.reviewer.name,
+			url: suggestedReviewer.reviewer.url,
+			isAuthor: suggestedReviewer.isAuthor,
+			isCommenter: suggestedReviewer.isCommenter
+		};
+	});
+
+	return ret.sort(loginComparator);
+}
+
+/**
+ * Used for case insensitive sort by login
+ */
+export function loginComparator(a: IAccount, b: IAccount) {
+	// sensitivity: 'accent' allows case insensitive comparison
+	return a.login.localeCompare(b.login, 'en', { sensitivity: 'accent' });
 }
 
 export function parseGraphQLReviewEvent(review: GraphQL.SubmittedReview, githubRepository: GitHubRepository): Common.ReviewEvent {
@@ -360,6 +491,7 @@ export function parseGraphQLTimelineEvents(events: (GraphQL.MergedEvent | GraphQ
 					canEdit: commentEvent.viewerCanUpdate,
 					canDelete: commentEvent.viewerCanDelete,
 					id: commentEvent.databaseId,
+					graphNodeId: commentEvent.id,
 					createdAt: commentEvent.createdAt
 				});
 				return;
@@ -433,24 +565,27 @@ export function parseGraphQLTimelineEvents(events: (GraphQL.MergedEvent | GraphQ
 	return normalizedEvents;
 }
 
-export function convertRESTTimelineEvents(events: any[]): Common.TimelineEvent[] {
-	events.forEach(event => {
-		if (event.event === Common.EventType.Commented) {
+export function parseGraphQLUser(user: GraphQL.UserResponse): User {
+	return {
+		login: user.user.login,
+		name: user.user.name,
+		avatarUrl: user.user.avatarUrl,
+		url: user.user.url,
+		bio: user.user.bio,
+		company: user.user.company,
+		location: user.user.location,
+		commitContributions: parseGraphQLCommitContributions(user.user.contributionsCollection)
+	};
+}
 
-		}
-
-		if (event.event === Common.EventType.Reviewed) {
-			event.submittedAt = event.submitted_at;
-			event.htmlUrl = event.html_url;
-			event.authorAssociation = event.user.type;
-		}
-
-		if (event.event === Common.EventType.Committed) {
-			event.htmlUrl = event.html_url;
-		}
+function parseGraphQLCommitContributions(commitComments: GraphQL.ContributionsCollection): { createdAt: Date, repoNameWithOwner: string }[] {
+	const items: { createdAt: Date, repoNameWithOwner: string }[] = [];
+	commitComments.commitContributionsByRepository.forEach(repoCommits => {
+		repoCommits.contributions.nodes.forEach(commit => {
+			items.push({ createdAt: new Date(commit.occurredAt), repoNameWithOwner: repoCommits.repository.nameWithOwner });
+		});
 	});
-
-	return events;
+	return items;
 }
 
 export function getReactionGroup(): { title: string; label: string; icon?: vscode.Uri }[] {

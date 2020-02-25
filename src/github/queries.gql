@@ -149,6 +149,20 @@ query TimelineEvents($owner: String!, $name: String!, $number: Int!, $last: Int 
 	}
 }
 
+query IssueTimelineEvents($owner: String!, $name: String!, $number: Int!, $last: Int = 150) {
+	repository(owner: $owner, name: $name) {
+		pullRequest: issue(number: $number) {
+			timelineItems(last: $last) {
+				nodes {
+					__typename
+					...Comment
+					...AssignedEvent
+				}
+			}
+		}
+	}
+}
+
 fragment ReviewComment on PullRequestReviewComment {
 	id databaseId url
 	author {
@@ -158,6 +172,7 @@ fragment ReviewComment on PullRequestReviewComment {
 	}
 	path originalPosition
 	body
+	bodyHTML
 	diffHunk
 	position
 	state
@@ -249,6 +264,81 @@ query PullRequest($owner: String!, $name: String!, $number: Int!) {
 			id
 			databaseId
 			isDraft
+			suggestedReviewers {
+				isAuthor
+				isCommenter
+				reviewer {
+					login
+					avatarUrl
+					name
+					url
+				}
+			}
+		}
+	}
+	rateLimit {
+		limit
+		cost
+		remaining
+		resetAt
+	}
+}
+
+query Issue($owner: String!, $name: String!, $number: Int!) {
+	repository(owner: $owner, name: $name) {
+		pullRequest: issue(number: $number) {
+			number
+			url
+			state
+			body
+			bodyHTML
+			title
+			author {
+				login
+				url
+				avatarUrl
+			}
+			createdAt
+			updatedAt
+			labels(first: 50) {
+				nodes {
+					name
+				}
+			}
+			id
+			databaseId
+		}
+	}
+}
+
+query GetUser($login: String!) {
+	user(login: $login) {
+		login
+		avatarUrl(size: 15)
+		bio
+		name
+		company
+		location
+		contributionsCollection {
+			commitContributionsByRepository(maxRepositories: 50) {
+				contributions(first: 1) {
+					nodes {
+						occurredAt
+					}
+				}
+				repository {
+					nameWithOwner
+				}
+			}
+		}
+		url
+	}
+}
+
+query PullRequestMergeability($owner: String!, $name: String!, $number: Int!) {
+	repository(owner: $owner, name: $name) {
+		pullRequest(number: $number) {
+			mergeable
 		}
 	}
 	rateLimit {
@@ -348,6 +438,34 @@ mutation DeleteReaction($input: RemoveReactionInput!){
 	}
 }
 
+mutation UpdatePullRequest($input: UpdatePullRequestInput!) {
+	updatePullRequest(input: $input) {
+		pullRequest {
+			body
+			bodyHTML
+			title
+		}
+	}
+}
+
+mutation AddIssueComment($input: AddCommentInput!) {
+	addComment(input: $input) {
+		commentEdge {
+			node {
+				...Comment
+			}
+		}
+	}
+}
+
+mutation EditIssueComment($input: UpdateIssueCommentInput!) {
+	updateIssueComment(input: $input) {
+		issueComment {
+			...Comment
+		}
+	}
+}
+
 query GetMentionableUsers($owner: String!, $name: String!, $first: Int!, $after: String) {
 	repository(owner: $owner, name: $name) {
 		mentionableUsers(first: $first, after: $after) {
@@ -368,5 +486,127 @@ query GetMentionableUsers($owner: String!, $name: String!, $first: Int!, $after:
 		cost
 		remaining
 		resetAt
+	}
+}
+
+query GetAssignableUsers($owner: String!, $name: String!, $first: Int!, $after: String) {
+	repository(owner: $owner, name: $name) {
+		assignableUsers(first: $first, after: $after) {
+			nodes {
+				login
+				avatarUrl
+				name
+				url
+			}
+			pageInfo {
+				hasNextPage
+				endCursor
+			}
+		}
+	}
+	rateLimit {
+		limit
+		cost
+		remaining
+		resetAt
+	}
+}
+
+query Issues($query: String!) {
+	search(first: 100, type: ISSUE, query: $query) {
+		issueCount
+		pageInfo {
+			hasNextPage
+			endCursor
+		}
+		edges {
+			node {
+				... on Issue {
+					number
+					url
+					state
+					body
+					bodyHTML
+					title
+					author {
+						login
+						url
+						avatarUrl
+					}
+					createdAt
+					updatedAt
+					labels(first: 50) {
+						nodes {
+							name
+						}
+					}
+					id
+					databaseId
+					milestone {
+						title
+						dueOn
+						id
+						createdAt
+					}
+				}
+			}
+		}
+	}
+}
+
+query GetMilestones($owner: String!, $name: String!, $assignee: String!) {
+	repository(owner: $owner, name: $name) {
+		milestones(first: 12, orderBy: {
+			direction: DESC
+			field: DUE_DATE
+		} , states: OPEN) {
+			nodes {
+				dueOn
+				title
+				createdAt,
+				id,
+				issues(first: 100, filterBy: {
+					assignee: $assignee
+				}, orderBy: {
+					direction: DESC
+					field: UPDATED_AT
+				}, states: OPEN) {
+					edges {
+						node {
+							... on Issue {
+								number
+								url
+								state
+								body
+								bodyHTML
+								title
+								author {
+									login
+									url
+									avatarUrl
+								}
+								createdAt
+								updatedAt
+								labels(first: 50) {
+									nodes {
+										name
+									}
+								}
+								id
+								databaseId
+								milestone {
+									title
+									dueOn
+								}
+							}
+						}
+					}
+				}
+			}
+			pageInfo {
+				hasNextPage
+				endCursor
+			}
+		}
 	}
 }
