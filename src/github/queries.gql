@@ -303,6 +303,7 @@ query Issue($owner: String!, $name: String!, $number: Int!) {
 			labels(first: 50) {
 				nodes {
 					name
+					color
 				}
 			}
 			id
@@ -311,10 +312,49 @@ query Issue($owner: String!, $name: String!, $number: Int!) {
 	}
 }
 
+query IssueWithComments($owner: String!, $name: String!, $number: Int!) {
+	repository(owner: $owner, name: $name) {
+		pullRequest: issue(number: $number) {
+			number
+			url
+			state
+			body
+			bodyHTML
+			title
+			author {
+				login
+				url
+				avatarUrl
+			}
+			createdAt
+			updatedAt
+			labels(first: 50) {
+				nodes {
+					name
+					color
+				}
+			}
+			id
+			databaseId
+			comments(first: 50) {
+				nodes {
+					author {
+						login
+						url
+						avatarUrl
+					}
+					body
+					databaseId
+				}
+			}
+		}
+	}
+}
+
 query GetUser($login: String!) {
 	user(login: $login) {
 		login
-		avatarUrl(size: 15)
+		avatarUrl(size: 50)
 		bio
 		name
 		company
@@ -385,7 +425,14 @@ mutation ReadyForReview($input: MarkPullRequestReadyForReviewInput!) {
 
 mutation StartReview($input: AddPullRequestReviewInput!) {
 	addPullRequestReview(input: $input) {
-		pullRequestReview { id }
+		pullRequestReview {
+			id
+			comments(first:1) {
+				nodes {
+					...ReviewComment
+				}
+			}
+		 }
 	}
 }
 
@@ -474,6 +521,7 @@ query GetMentionableUsers($owner: String!, $name: String!, $first: Int!, $after:
 				avatarUrl
 				name
 				url
+				email
 			}
 			pageInfo {
 				hasNextPage
@@ -497,6 +545,7 @@ query GetAssignableUsers($owner: String!, $name: String!, $first: Int!, $after: 
 				avatarUrl
 				name
 				url
+				email
 			}
 			pageInfo {
 				hasNextPage
@@ -512,43 +561,49 @@ query GetAssignableUsers($owner: String!, $name: String!, $first: Int!, $after: 
 	}
 }
 
-query Issues($query: String!) {
-	search(first: 100, type: ISSUE, query: $query) {
-		issueCount
-		pageInfo {
-			hasNextPage
-			endCursor
-		}
-		edges {
-			node {
-				... on Issue {
-					number
-					url
-					state
-					body
-					bodyHTML
-					title
-					author {
-						login
+query IssuesWithoutMilestone($owner: String!, $name: String!, $assignee: String!) {
+	repository(owner: $owner, name: $name) {
+		issues(first: 100, states: OPEN, filterBy: {
+			assignee: $assignee,
+			milestone: null
+		}, orderBy: {
+			direction: DESC
+			field: UPDATED_AT
+		}) {
+			edges {
+				node {
+					... on Issue {
+						number
 						url
-						avatarUrl
-					}
-					createdAt
-					updatedAt
-					labels(first: 50) {
-						nodes {
-							name
+						state
+						body
+						bodyHTML
+						title
+						author {
+							login
+							url
+							avatarUrl(size: 50)
+						}
+						createdAt
+						updatedAt
+						labels(first: 50) {
+							nodes {
+								name
+								color
+							}
+						}
+						id
+						databaseId
+						milestone {
+							title
+							dueOn
 						}
 					}
-					id
-					databaseId
-					milestone {
-						title
-						dueOn
-						id
-						createdAt
-					}
 				}
+			}
+			pageInfo {
+				hasNextPage
+				endCursor
 			}
 		}
 	}
@@ -583,13 +638,14 @@ query GetMilestones($owner: String!, $name: String!, $assignee: String!) {
 								author {
 									login
 									url
-									avatarUrl
+									avatarUrl(size: 50)
 								}
 								createdAt
 								updatedAt
 								labels(first: 50) {
 									nodes {
 										name
+										color
 									}
 								}
 								id
@@ -606,6 +662,56 @@ query GetMilestones($owner: String!, $name: String!, $assignee: String!) {
 			pageInfo {
 				hasNextPage
 				endCursor
+			}
+		}
+	}
+}
+
+query Issues($query: String!) {
+	search(first: 100, type: ISSUE, query: $query) {
+		issueCount
+		pageInfo {
+			hasNextPage
+			endCursor
+		}
+		edges {
+			node {
+				... on Issue {
+					number
+					url
+					state
+					body
+					bodyHTML
+					title
+					author {
+						login
+						url
+						avatarUrl(size: 50)
+					}
+					createdAt
+					updatedAt
+					labels(first: 50) {
+						nodes {
+							name
+							color
+						}
+					}
+					id
+					databaseId
+					milestone {
+						title
+						dueOn
+						id
+						createdAt
+					}
+					repository {
+						name
+						owner {
+							login
+						}
+						url
+					}
+				}
 			}
 		}
 	}

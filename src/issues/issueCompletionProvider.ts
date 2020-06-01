@@ -4,81 +4,26 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { PullRequestManager, PRManagerState } from '../github/pullRequestManager';
+import { issueMarkdown, ISSUES_CONFIGURATION, variableSubstitution, getIssueNumberLabel, isComment } from './util';
+import { StateManager } from './stateManager';
+import { IssueModel } from '../github/issueModel';
+import { IMilestone } from '../github/interface';
 import { MilestoneModel } from '../github/milestoneModel';
-import { issueMarkdown } from './util';
+import { PullRequestManager, PullRequestDefaults } from '../github/pullRequestManager';
 
-// TODO: make exclude from date words configurable
-const excludeFromDate: string[] = ['Recovery'];
-const now = new Date();
+class IssueCompletionItem extends vscode.CompletionItem {
+	constructor(public readonly issue: IssueModel) {
+		super(`${issue.number}: ${issue.title}`, vscode.CompletionItemKind.Issue);
+	}
+}
 
 export class IssueCompletionProvider implements vscode.CompletionItemProvider {
-	private _items: Promise<MilestoneModel[]> = Promise.resolve([]);
 
-	constructor(private manager: PullRequestManager, context: vscode.ExtensionContext) {
-		if (this.manager.state === PRManagerState.RepositoriesLoaded) {
-			this._items = this.createItems();
-		} else {
-			const disposable = this.manager.onDidChangeState(() => {
-				if (this.manager.state === PRManagerState.RepositoriesLoaded) {
-					this._items = this.createItems();
-					disposable.dispose();
-				}
-			});
-			context.subscriptions.push(disposable);
-		}
-	}
-
-	private createItems(): Promise<MilestoneModel[]> {
-		return new Promise(async (resolve) => {
-			const milestones = await this.manager.getIssues({ fetchNextPage: false });
-			let mostRecentPastTitleTime: Date | undefined = undefined;
-			const milestoneDateMap: Map<string, Date> = new Map();
-			const milestonesToUse: MilestoneModel[] = [];
-			const skipMilestones: string[] = vscode.workspace.getConfiguration('githubIssues').get('ignoreMilestones', []);
-
-			// The number of milestones is expected to be very low, so two passes through is negligible
-			for (let i = 0; i < milestones.items.length; i++) {
-				const item = milestones.items[i];
-				const milestone = milestones.items[i].milestone;
-				if ((item.issues && item.issues.length <= 0) || (skipMilestones.indexOf(milestone.title) >= 0)) {
-					continue;
-				}
-				milestonesToUse.push(item);
-				let milestoneDate = milestone.dueOn ? new Date(milestone.dueOn) : undefined;
-				if (!milestoneDate) {
-					milestoneDate = new Date(this.removeDateExcludeStrings(milestone.title));
-					if (isNaN(milestoneDate.getTime())) {
-						milestoneDate = new Date(milestone.createdAt!);
-					}
-				}
-				if ((milestoneDate < now) && ((mostRecentPastTitleTime === undefined) || (milestoneDate > mostRecentPastTitleTime))) {
-					mostRecentPastTitleTime = milestoneDate;
-				}
-				milestoneDateMap.set(milestone.id ? milestone.id : milestone.title, milestoneDate);
-			}
-
-			milestonesToUse.sort((a: MilestoneModel, b: MilestoneModel): number => {
-				const dateA = milestoneDateMap.get(a.milestone.id ? a.milestone.id : a.milestone.title)!;
-				const dateB = milestoneDateMap.get(b.milestone.id ? b.milestone.id : b.milestone.title)!;
-				if (mostRecentPastTitleTime && (dateA >= mostRecentPastTitleTime) && (dateB >= mostRecentPastTitleTime)) {
-					return dateA <= dateB ? -1 : 1;
-				} else {
-					return dateA >= dateB ? -1 : 1;
-				}
-			});
-			resolve(milestonesToUse);
-		});
-	}
-
-	private removeDateExcludeStrings(possibleDate: string): string {
-		excludeFromDate.forEach(exclude => possibleDate = possibleDate.replace(exclude, ''));
-		return possibleDate;
-	}
+	constructor(private stateManager: StateManager, private pullRequestManager: PullRequestManager, private context: vscode.ExtensionContext) { }
 
 	async provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): Promise<vscode.CompletionItem[]> {
 		// If the suggest was not triggered by the trigger character, require that the previous character be the trigger character
-		if ((position.character > 0) && (context.triggerKind === vscode.CompletionTriggerKind.Invoke) && (document.getText(new vscode.Range(position.with(undefined, position.character - 1), position)) !== '#')) {
+		if ((document.languageId !== 'scminput') && (position.character > 0) && (context.triggerKind === vscode.CompletionTriggerKind.Invoke) && !document.getText(document.getWordRangeAtPosition(position)).match(/#[0-9]*$/)) {
 			return [];
 		}
 		// It's common in markdown to start a line with #s and not want an completion
@@ -86,7 +31,15 @@ export class IssueCompletionProvider implements vscode.CompletionItemProvider {
 			return [];
 		}
 
-		const milestones = await this._items;
+		if ((context.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter) &&
+			(<string[]>vscode.workspace.getConfiguration(ISSUES_CONFIGURATION).get('ignoreCompletionTrigger', [])).find(value => value === document.languageId)) {
+			return [];
+		}
+
+		if (!(await isComment(document, position))) {
+			return [];
+		}
+
 		let range: vscode.Range = new vscode.Range(position, position);
 		if (position.character - 1 >= 0) {
 			const wordAtPos = document.getText(new vscode.Range(position.translate(0, -1), position));
@@ -95,27 +48,69 @@ export class IssueCompletionProvider implements vscode.CompletionItemProvider {
 			}
 		}
 
-		const completionItems: vscode.CompletionItem[] = [];
-		for (let index = 0; index < milestones.length; index++) {
-			const value = milestones[index];
-			value.issues.forEach(issue => {
-				const item: vscode.CompletionItem = new vscode.CompletionItem(`${issue.number}: ${issue.title}`, vscode.CompletionItemKind.Constant);
-				if (document.languageId === 'markdown') {
-					item.insertText = `[#${issue.number}](${issue.html_url})`;
-				} else {
-					item.insertText = `#${issue.number}`;
-				}
-				item.documentation = issueMarkdown(issue);
-				item.range = range;
-				item.detail = value.milestone.title;
-				let updatedAt: string = (now.getTime() - new Date(issue.updatedAt).getTime()).toString();
-				updatedAt = (new Array(20 - updatedAt.length).join('0')) + updatedAt;
-				item.sortText = `${index} ${updatedAt}`;
-				item.filterText = `${item.detail} # ${issue.number} ${issue.title} ${item.documentation}`;
-				completionItems.push(item);
-			});
-		}
+		await this.stateManager.tryInitializeAndWait();
 
-		return completionItems;
+		const completionItems: Map<string, vscode.CompletionItem> = new Map();
+		const now = new Date();
+		let repo: PullRequestDefaults | undefined;
+		try {
+			repo = await this.pullRequestManager.getPullRequestDefaults();
+		} catch (e) {
+			// leave repo undefined
+		}
+		const issueData = this.stateManager.issueCollection;
+		for (const issueQuery of issueData) {
+			const issuesOrMilestones: IssueModel[] | MilestoneModel[] = await issueQuery[1] ?? [];
+			if (issuesOrMilestones.length === 0) {
+				continue;
+			}
+			if (issuesOrMilestones[0] instanceof IssueModel) {
+				let index = 0;
+				for (const issue of issuesOrMilestones) {
+					completionItems.set(getIssueNumberLabel(<IssueModel>issue), await this.completionItemFromIssue(repo, <IssueModel>issue, now, range, document, index++));
+				}
+			} else {
+				for (let index = 0; index < issuesOrMilestones.length; index++) {
+					const value: MilestoneModel = <MilestoneModel>issuesOrMilestones[index];
+					for (const issue of value.issues) {
+						completionItems.set(getIssueNumberLabel(issue), await this.completionItemFromIssue(repo, issue, now, range, document, index, value.milestone));
+					}
+				}
+			}
+		}
+		return [...completionItems.values()];
+	}
+
+	private async completionItemFromIssue(repo: PullRequestDefaults | undefined, issue: IssueModel, now: Date, range: vscode.Range, document: vscode.TextDocument, index: number, milestone?: IMilestone): Promise<IssueCompletionItem> {
+		const item: IssueCompletionItem = new IssueCompletionItem(issue);
+		if (document.languageId === 'markdown') {
+			item.insertText = `[${getIssueNumberLabel(issue, repo)}](${issue.html_url})`;
+		} else {
+			const configuration = vscode.workspace.getConfiguration(ISSUES_CONFIGURATION).get('issueCompletionFormatScm');
+			if (document.uri.path.match(/scm\/git\/scm\d\/input/) && (typeof configuration === 'string')) {
+				item.insertText = await variableSubstitution(configuration, issue, repo);
+			} else {
+				item.insertText = `${getIssueNumberLabel(issue, repo)}`;
+			}
+		}
+		item.documentation = issue.body;
+		item.range = range;
+		item.detail = milestone ? milestone.title : issue.milestone?.title;
+		let updatedAt: string = (now.getTime() - new Date(issue.updatedAt).getTime()).toString();
+		updatedAt = (new Array(20 - updatedAt.length).join('0')) + updatedAt;
+		item.sortText = `${index} ${updatedAt}`;
+		item.filterText = `${item.detail} # ${issue.number} ${issue.title} ${item.documentation}`;
+		return item;
+	}
+
+	resolveCompletionItem(item: vscode.CompletionItem, token: vscode.CancellationToken): vscode.CompletionItem {
+		if (item instanceof IssueCompletionItem) {
+			item.documentation = issueMarkdown(item.issue, this.context);
+			item.command = {
+				command: 'issues.issueCompletion',
+				title: 'Issue Completion Chose,'
+			};
+		}
+		return item;
 	}
 }

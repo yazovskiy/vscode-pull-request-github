@@ -37,6 +37,7 @@ export interface IAccount {
 	name?: string;
 	avatarUrl?: string;
 	url: string;
+	email?: string;
 }
 
 export interface ISuggestedReviewer extends IAccount {
@@ -71,6 +72,7 @@ export interface IGitHubRef {
 
 export interface ILabel {
 	name: string;
+	color: string;
 }
 
 export interface Issue {
@@ -88,6 +90,14 @@ export interface Issue {
 	user: IAccount;
 	labels: ILabel[];
 	milestone?: IMilestone;
+	repositoryOwner?: string;
+	repositoryName?: string;
+	repositoryUrl?: string;
+	comments?: {
+		author: IAccount;
+		body: string;
+		databaseId: number;
+	}[];
 }
 
 export interface PullRequest extends Issue {

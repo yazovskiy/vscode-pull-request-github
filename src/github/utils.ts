@@ -27,7 +27,7 @@ export function createVSCodeCommentThread(thread: ThreadData, commentController:
 		[]
 	);
 
-	vscodeThread.threadId = thread.threadId;
+	(vscodeThread as GHPRCommentThread).threadId = thread.threadId;
 
 	vscodeThread.comments = thread.comments.map(comment => new GHPRComment(comment, vscodeThread as GHPRCommentThread));
 
@@ -181,6 +181,7 @@ export function convertRESTReviewEvent(review: Octokit.PullsCreateReviewResponse
 		comments: [],
 		submittedAt: (review as any).submitted_at, // TODO fix typings upstream
 		body: review.body,
+		bodyHTML: review.body,
 		htmlUrl: review.html_url,
 		user: convertRESTUserToAccount(review.user, githubRepository),
 		authorAssociation: review.user.type,
@@ -386,8 +387,29 @@ export function parseGraphQLPullRequest(pullRequest: GraphQL.PullRequestResponse
 		mergeable: parseMergeability(graphQLPullRequest.mergeable),
 		labels: graphQLPullRequest.labels.nodes,
 		isDraft: graphQLPullRequest.isDraft,
-		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers)
+		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers),
+		comments: parseComments(graphQLPullRequest.comments?.nodes, githubRepository)
 	};
+}
+
+function parseComments(comments: GraphQL.AbbreviatedIssueComment[] | undefined, githubRepository: GitHubRepository) {
+	if (!comments) {
+		return;
+	}
+	const parsedComments: {
+		author: IAccount;
+		body: string;
+		databaseId: number;
+	}[] = [];
+	for (const comment of comments) {
+		parsedComments.push({
+			author: parseAuthor(comment.author, githubRepository),
+			body: comment.body,
+			databaseId: comment.databaseId
+		});
+	}
+
+	return parsedComments;
 }
 
 export function parseGraphQLIssue(issue: GraphQL.PullRequest, githubRepository: GitHubRepository): Issue {
@@ -403,11 +425,14 @@ export function parseGraphQLIssue(issue: GraphQL.PullRequest, githubRepository: 
 		createdAt: issue.createdAt,
 		updatedAt: issue.updatedAt,
 		user: parseAuthor(issue.author, githubRepository),
-		labels: issue.labels.nodes
+		labels: issue.labels.nodes,
+		repositoryName: issue.repository?.name,
+		repositoryOwner: issue.repository?.owner.login,
+		repositoryUrl: issue.repository?.url
 	};
 }
 
-export function parseGraphQLSearchRequest(pullRequest: GraphQL.PullRequest, githubRepository: GitHubRepository): PullRequest {
+export function parseGraphQLIssuesRequest(pullRequest: GraphQL.PullRequest, githubRepository: GitHubRepository): PullRequest {
 	const graphQLPullRequest = pullRequest;
 
 	return {
@@ -591,37 +616,44 @@ function parseGraphQLCommitContributions(commitComments: GraphQL.ContributionsCo
 export function getReactionGroup(): { title: string; label: string; icon?: vscode.Uri }[] {
 	const ret = [
 		{
-			title: 'CONFUSED',
-			label: '😕',
-			icon: Resource.icons.reactions.CONFUSED
-		}, {
-			title: 'EYES',
-			label: '👀',
-			icon: Resource.icons.reactions.EYES
-		}, {
-			title: 'HEART',
-			label: '❤️',
-			icon: Resource.icons.reactions.HEART
-		}, {
-			title: 'HOORAY',
-			label: '🎉',
-			icon: Resource.icons.reactions.HOORAY
-		}, {
-			title: 'LAUGH',
-			label: '😄',
-			icon: Resource.icons.reactions.LAUGH
-		}, {
-			title: 'ROCKET',
-			label: '🚀',
-			icon: Resource.icons.reactions.ROCKET
-		}, {
-			title: 'THUMBS_DOWN',
-			label: '👎',
-			icon: Resource.icons.reactions.THUMBS_DOWN
-		}, {
 			title: 'THUMBS_UP',
 			label: '👍',
 			icon: Resource.icons.reactions.THUMBS_UP
+		},
+		{
+			title: 'THUMBS_DOWN',
+			label: '👎',
+			icon: Resource.icons.reactions.THUMBS_DOWN
+		},
+		{
+			title: 'LAUGH',
+			label: '😄',
+			icon: Resource.icons.reactions.LAUGH
+		},
+		{
+			title: 'HOORAY',
+			label: '🎉',
+			icon: Resource.icons.reactions.HOORAY
+		},
+		{
+			title: 'CONFUSED',
+			label: '😕',
+			icon: Resource.icons.reactions.CONFUSED
+		},
+		{
+			title: 'HEART',
+			label: '❤️',
+			icon: Resource.icons.reactions.HEART
+		},
+		{
+			title: 'ROCKET',
+			label: '🚀',
+			icon: Resource.icons.reactions.ROCKET
+		},
+		{
+			title: 'EYES',
+			label: '👀',
+			icon: Resource.icons.reactions.EYES
 		}
 	];
 
@@ -642,14 +674,14 @@ export function getRelatedUsersFromTimelineEvents(timelineEvents: Common.Timelin
 		if (Common.isReviewEvent(event)) {
 			ret.push({
 				login: event.user.login,
-				name: event.user.login
+				name: event.user.name ?? event.user.login
 			});
 		}
 
 		if (Common.isCommentEvent(event)) {
 			ret.push({
 				login: event.user.login,
-				name: event.user.login
+				name: event.user.name ?? event.user.login
 			});
 		}
 	});

@@ -14,8 +14,9 @@ import { AuthenticationError } from '../common/authentication';
 import { QueryOptions, MutationOptions, ApolloQueryResult, NetworkStatus, FetchResult } from 'apollo-boost';
 import { PRCommentController } from '../view/prCommentController';
 import { convertRESTPullRequestToRawPullRequest, parseMergeability, parseGraphQLPullRequest, parseGraphQLIssue, parseMilestone } from './utils';
-import { PullRequestResponse, MentionableUsersResponse, AssignableUsersResponse, MilestoneIssuesResponse } from './graphql';
+import { PullRequestResponse, MentionableUsersResponse, AssignableUsersResponse, MilestoneIssuesResponse, IssuesResponse, IssuesSearchResponse } from './graphql';
 import { IssueModel } from './issueModel';
+const defaultSchema = require('./queries.gql');
 
 export const PULL_REQUEST_PAGE_SIZE = 20;
 
@@ -131,7 +132,7 @@ export class GitHubRepository implements vscode.Disposable {
 	}
 
 	get schema() {
-		return this.hub.schema;
+		return defaultSchema;
 	}
 
 	async getMetadata(): Promise<any> {
@@ -162,10 +163,10 @@ export class GitHubRepository implements vscode.Disposable {
 	async ensure(): Promise<GitHubRepository> {
 		this._initialized = true;
 
-		if (!await this._credentialStore.hasOctokit(this.remote)) {
-			this._hub = await this._credentialStore.loginWithConfirmation(this.remote);
+		if (!this._credentialStore.isAuthenticated()) {
+			this._hub = await this._credentialStore.showSignInNotification();
 		} else {
-			this._hub = await this._credentialStore.getHub(this.remote);
+			this._hub = await this._credentialStore.getHub();
 		}
 
 		return this;
@@ -285,12 +286,12 @@ export class GitHubRepository implements vscode.Disposable {
 				variables: {
 					owner: remote.owner,
 					name: remote.repositoryName,
-					assignee: this._credentialStore.getCurrentUser(remote).login
+					assignee: this._credentialStore.getCurrentUser().login
 				}
 			});
 			Logger.debug(`Fetch all issues - done`, GitHubRepository.ID);
 
-			const milestones: {milestone: IMilestone, issues: IssueModel[] }[] = [];
+			const milestones: { milestone: IMilestone, issues: IssueModel[] }[] = [];
 			if (data && data.repository.milestones && data.repository.milestones.nodes) {
 				data.repository.milestones.nodes.forEach(raw => {
 					const milestone = parseMilestone(raw);
@@ -311,6 +312,74 @@ export class GitHubRepository implements vscode.Disposable {
 			Logger.appendLine(`GithubRepository> Unable to fetch issues: ${e}`);
 			return;
 		}
+	}
+
+	async getIssuesWithoutMilestone(page?: number): Promise<IssueData | undefined> {
+		try {
+			Logger.debug(`Fetch issues without milestone- enter`, GitHubRepository.ID);
+			const { query, remote, schema } = await this.ensure();
+			const { data } = await query<IssuesResponse>({
+				query: schema.IssuesWithoutMilestone,
+				variables: {
+					owner: remote.owner,
+					name: remote.repositoryName,
+					assignee: this._credentialStore.getCurrentUser().login
+				}
+			});
+			Logger.debug(`Fetch issues without milestone - done`, GitHubRepository.ID);
+
+			const issues: IssueModel[] = [];
+			if (data && data.repository.issues.edges) {
+				data.repository.issues.edges.forEach(raw => {
+					if (raw.node.id) {
+						issues.push(new IssueModel(this, remote, parseGraphQLIssue(raw.node, this)));
+					}
+				});
+			}
+			return {
+				items: issues,
+				hasMorePages: data.repository.issues.pageInfo.hasNextPage
+			};
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to fetch issues without milestone: ${e}`);
+			return;
+		}
+	}
+
+	async getIssues(page?: number, queryString?: string): Promise<IssueData | undefined> {
+		try {
+			Logger.debug(`Fetch issues with query - enter`, GitHubRepository.ID);
+			const { query, remote, schema } = await this.ensure();
+			const { data } = await query<IssuesSearchResponse>({
+				query: schema.Issues,
+				variables: {
+					query: queryString
+				}
+			});
+			Logger.debug(`Fetch issues with query - done`, GitHubRepository.ID);
+
+			const issues: IssueModel[] = [];
+			if (data && data.search.edges) {
+				data.search.edges.forEach(raw => {
+					if (raw.node.id) {
+						issues.push(new IssueModel(this, remote, parseGraphQLIssue(raw.node, this)));
+					}
+				});
+			}
+			return {
+				items: issues,
+				hasMorePages: data.search.pageInfo.hasNextPage
+			};
+		} catch (e) {
+			Logger.appendLine(`GithubRepository> Unable to fetch issues with query: ${e}`);
+			return;
+		}
+	}
+
+	async getAuthenticatedUser(): Promise<string> {
+		const { octokit } = await this.ensure();
+		const user = await octokit.users.getAuthenticated({});
+		return user.data.login;
 	}
 
 	async getPullRequestsForCategory(categoryQuery: string, page?: number): Promise<PullRequestData | undefined> {
@@ -388,13 +457,13 @@ export class GitHubRepository implements vscode.Disposable {
 		}
 	}
 
-	async getIssue(id: number): Promise<IssueModel | undefined> {
+	async getIssue(id: number, withComments: boolean = false): Promise<IssueModel | undefined> {
 		try {
 			Logger.debug(`Fetch issue ${id} - enter`, GitHubRepository.ID);
 			const { query, remote, schema } = await this.ensure();
 
 			const { data } = await query<PullRequestResponse>({
-				query: schema.Issue,
+				query: withComments ? schema.IssueWithComments : schema.Issue,
 				variables: {
 					owner: remote.owner,
 					name: remote.repositoryName,
@@ -475,7 +544,8 @@ export class GitHubRepository implements vscode.Disposable {
 						login: node.login,
 						avatarUrl: node.avatarUrl,
 						name: node.name,
-						url: node.url
+						url: node.url,
+						email: node.email,
 					};
 				}));
 
@@ -515,7 +585,8 @@ export class GitHubRepository implements vscode.Disposable {
 						login: node.login,
 						avatarUrl: node.avatarUrl,
 						name: node.name,
-						url: node.url
+						url: node.url,
+						email: node.email,
 					};
 				}));
 

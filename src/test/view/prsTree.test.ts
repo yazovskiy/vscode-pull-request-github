@@ -5,11 +5,9 @@ import Octokit = require('@octokit/rest');
 
 import { PullRequestsTreeDataProvider } from '../../view/prsTreeDataProvider';
 import { PullRequestManager } from '../../github/pullRequestManager';
-import { init as initKeytar } from '../../authentication/keychain';
 
 import { MockTelemetry } from '../mocks/mockTelemetry';
 import { MockExtensionContext } from '../mocks/mockExtensionContext';
-import { MockKeytar } from '../mocks/mockKeytar';
 import { MockRepository } from '../mocks/mockRepository';
 import { MockCommandRegistry } from '../mocks/mockCommandRegistry';
 import { MockGitHubRepository } from '../mocks/mockGitHubRepository';
@@ -25,7 +23,6 @@ import { ApiImpl } from '../../api/api1';
 describe('GitHub Pull Requests view', function() {
 	let sinon: SinonSandbox;
 	let context: MockExtensionContext;
-	let keytar: MockKeytar;
 	let telemetry: MockTelemetry;
 	let provider: PullRequestsTreeDataProvider;
 	let credentialStore: CredentialStore;
@@ -35,16 +32,14 @@ describe('GitHub Pull Requests view', function() {
 		MockCommandRegistry.install(sinon);
 
 		context = new MockExtensionContext();
-		keytar = new MockKeytar();
-		initKeytar(context, keytar);
 
 		telemetry = new MockTelemetry();
 		provider = new PullRequestsTreeDataProvider(telemetry);
 		credentialStore = new CredentialStore(telemetry);
 
-		// For tree view unit tests, we don't test the authentication flow, so `loginWithConfirmation` returns
+		// For tree view unit tests, we don't test the authentication flow, so `showSignInNotification` returns
 		// a dummy GitHub/Octokit object.
-		sinon.stub(credentialStore, 'loginWithConfirmation').callsFake(async (remote) => {
+		sinon.stub(credentialStore, 'showSignInNotification').callsFake(async () => {
 			const github: GitHub = {
 				octokit: new Octokit({
 					request: {},
@@ -52,8 +47,7 @@ describe('GitHub Pull Requests view', function() {
 					userAgent: 'GitHub VSCode Pull Requests',
 					previews: ['shadow-cat-preview']
 				}),
-				graphql: null,
-				schema: null,
+				graphql: null
 			};
 
 			return github;
@@ -101,7 +95,7 @@ describe('GitHub Pull Requests view', function() {
 		repository.addRemote('origin', 'git@github.com:aaa/bbb');
 
 		const manager = new PullRequestManager(repository, telemetry, new ApiImpl(), credentialStore);
-		provider.initialize(manager);
+		await provider.initialize(manager);
 
 		const rootNodes = await provider.getChildren();
 		assert.strictEqual(rootNodes.length, 1);
@@ -121,9 +115,9 @@ describe('GitHub Pull Requests view', function() {
 		sinon.stub(manager, 'createGitHubRepository').callsFake((remote, cStore) => {
 			return new MockGitHubRepository(remote, cStore, sinon);
 		});
-		sinon.stub(credentialStore, 'hasOctokit').returns(Promise.resolve(false));
+		sinon.stub(credentialStore, 'isAuthenticated').returns(false);
 		await manager.updateRepositories();
-		provider.initialize(manager);
+		await provider.initialize(manager);
 
 		const rootNodes = await provider.getChildren();
 		assert.strictEqual(rootNodes.length, 1);
@@ -144,9 +138,9 @@ describe('GitHub Pull Requests view', function() {
 		sinon.stub(manager, 'createGitHubRepository').callsFake((remote, cStore) => {
 			return new MockGitHubRepository(remote, cStore, sinon);
 		});
-		sinon.stub(credentialStore, 'hasOctokit').returns(Promise.resolve(true));
+		sinon.stub(credentialStore, 'isAuthenticated').returns(true);
 		await manager.updateRepositories();
-		provider.initialize(manager);
+		await provider.initialize(manager);
 
 		const rootNodes = await provider.getChildren();
 
@@ -211,9 +205,9 @@ describe('GitHub Pull Requests view', function() {
 				assert.strictEqual(cs, credentialStore);
 				return gitHubRepository;
 			});
-			sinon.stub(credentialStore, 'hasOctokit').returns(Promise.resolve(true));
+			sinon.stub(credentialStore, 'isAuthenticated').returns(true);
 			await manager.updateRepositories();
-			provider.initialize(manager);
+			await provider.initialize(manager);
 			manager.activePullRequest = pullRequest1;
 
 			const rootNodes = await provider.getChildren();

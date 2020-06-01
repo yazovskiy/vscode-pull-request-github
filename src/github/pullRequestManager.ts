@@ -15,18 +15,19 @@ import { IPullRequestsPagingOptions, PRType, ReviewEvent, IPullRequestEditData, 
 import { PullRequestGitHelper, PullRequestMetadata } from './pullRequestGitHelper';
 import { PullRequestModel, IResolvedPullRequestModel } from './pullRequestModel';
 import { GitHubManager } from '../authentication/githubServer';
-import { formatError, uniqBy, Predicate, groupBy } from '../common/utils';
+import { formatError, Predicate } from '../common/utils';
 import { Repository, RefType, UpstreamRef } from '../api/api';
 import Logger from '../common/logger';
 import { EXTENSION_ID } from '../constants';
 import { fromPRUri } from '../common/uri';
 import { convertRESTPullRequestToRawPullRequest, parseGraphQLTimelineEvents, getRelatedUsersFromTimelineEvents, parseGraphQLComment, getReactionGroup, convertRESTUserToAccount, convertRESTReviewEvent, parseGraphQLReviewEvent, loginComparator, parseGraphQlIssueComment, convertPullRequestsGetCommentsResponseItemToComment, convertRESTIssueToRawPullRequest, parseGraphQLUser } from './utils';
-import { PendingReviewIdResponse, TimelineEventsResponse, PullRequestCommentsResponse, AddCommentResponse, SubmitReviewResponse, DeleteReviewResponse, EditCommentResponse, DeleteReactionResponse, AddReactionResponse, MarkPullRequestReadyForReviewResponse, PullRequestState, UpdatePullRequestResponse, EditIssueCommentResponse, AddIssueCommentResponse, UserResponse } from './graphql';
+import { PendingReviewIdResponse, TimelineEventsResponse, PullRequestCommentsResponse, AddCommentResponse, SubmitReviewResponse, DeleteReviewResponse, EditCommentResponse, DeleteReactionResponse, AddReactionResponse, MarkPullRequestReadyForReviewResponse, PullRequestState, UpdatePullRequestResponse, EditIssueCommentResponse, AddIssueCommentResponse, UserResponse, StartReviewResponse } from './graphql';
 import { ITelemetry } from '../common/telemetry';
 import { ApiImpl } from '../api/api1';
 import { Protocol } from '../common/protocol';
 import { IssueModel } from './issueModel';
 import { MilestoneModel } from './milestoneModel';
+import { userMarkdown, UserCompletion } from '../issues/util';
 
 interface PageInformation {
 	pullRequestPage: number;
@@ -108,6 +109,15 @@ export interface PullRequestDefaults {
 	base: string;
 }
 
+export const NO_MILESTONE: string = 'No Milestone';
+
+enum PagedDataType {
+	PullRequest,
+	Milestones,
+	IssuesWithoutMilestone,
+	IssueSearch
+}
+
 export class PullRequestManager implements vscode.Disposable {
 	static ID = 'PullRequestManager';
 
@@ -132,23 +142,27 @@ export class PullRequestManager implements vscode.Disposable {
 	private _onDidChangeState = new vscode.EventEmitter<void>();
 	readonly onDidChangeState: vscode.Event<void> = this._onDidChangeState.event;
 
+	private _onDidChangeRepositories = new vscode.EventEmitter<void>();
+	readonly onDidChangeRepositories: vscode.Event<void> = this._onDidChangeRepositories.event;
+
+	private _onDidChangeAssignableUsers = new vscode.EventEmitter<IAccount[]>();
+	readonly onDidChangeAssignableUsers: vscode.Event<IAccount[]> = this._onDidChangeAssignableUsers.event;
+
 	private _state: PRManagerState = PRManagerState.Initializing;
 
 	constructor(
 		private _repository: Repository,
 		private readonly _telemetry: ITelemetry,
 		private _git: ApiImpl,
-		private _credentialStore: CredentialStore = new CredentialStore(_telemetry),
+		private _credentialStore: CredentialStore,
 	) {
 		this._subs = [];
 		this._githubRepositories = [];
 		this._githubManager = new GitHubManager();
 
-		this._subs.push(this._credentialStore);
 		this._subs.push(vscode.workspace.onDidChangeConfiguration(async e => {
 			if (e.affectsConfiguration(`${SETTINGS_NAMESPACE}.${REMOTES_SETTING}`)) {
 				await this.updateRepositories();
-				vscode.commands.executeCommand('pr.refreshList');
 			}
 		}));
 
@@ -168,18 +182,12 @@ export class PullRequestManager implements vscode.Disposable {
 		}
 	}
 
-	// Check if the remotes are authenticated and show a prompt if not, but don't block on user's response
-	private async showLoginPrompt(): Promise<void> {
-		const activeRemotes = await this.getActiveRemotes();
-		for (const server of uniqBy(activeRemotes, remote => remote.gitProtocol.normalizeUri()!.authority)) {
-			this._credentialStore.hasOctokit(server).then(authd => {
-				if (!authd) {
-					this._credentialStore.loginWithConfirmation(server);
-				}
-			});
+	// Check if authenticated and show a prompt if not, but don't block on user's response
+	private showLoginPrompt(): void {
+		const authd = this._credentialStore.isAuthenticated();
+		if (!authd) {
+			this._credentialStore.showSignInNotification();
 		}
-
-		return Promise.resolve();
 	}
 
 	private computeAllGitHubRemotes(): Promise<Remote[]> {
@@ -188,13 +196,13 @@ export class PullRequestManager implements vscode.Disposable {
 		return Promise.all(potentialRemotes.map(remote => this._githubManager.isGitHub(remote.gitProtocol.normalizeUri()!)))
 			.then(results => potentialRemotes.filter((_, index, __) => results[index]))
 			.catch(e => {
-				Logger.appendLine(`Resolving GitHub remotes failed: ${formatError(e)}`);
+				Logger.appendLine(`Resolving GitHub remotes failed: ${e}`);
 				vscode.window.showErrorMessage(`Resolving GitHub remotes failed: ${formatError(e)}`);
 				return [];
 			});
 	}
 
-	private async getActiveGitHubRemotes(allGitHubRemotes: Remote[]): Promise<Remote[]> {
+	public async getActiveGitHubRemotes(allGitHubRemotes: Remote[]): Promise<Remote[]> {
 		const remotesSetting = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE).get<string[]>(REMOTES_SETTING);
 
 		if (!remotesSetting) {
@@ -218,7 +226,7 @@ export class PullRequestManager implements vscode.Disposable {
 	private setUpCompletionItemProvider() {
 		let lastPullRequest: PullRequestModel | undefined = undefined;
 		let lastPullRequestTimelineEvents: TimelineEvent[] = [];
-		let cachedUsers: vscode.CompletionItem[] = [];
+		let cachedUsers: UserCompletion[] = [];
 
 		vscode.languages.registerCompletionItemProvider({ scheme: 'comment' }, {
 			provideCompletionItems: async (document, position, token) => {
@@ -344,11 +352,13 @@ export class PullRequestManager implements vscode.Disposable {
 								}
 
 								cachedUsers.push({
-									label: `@${user.login}`,
-									insertText: `${user.login}`,
+									label: user.login,
+									insertText: user.login,
 									filterText: `${user.login}` + (user.name && user.name !== user.login ? `_${user.name.toLowerCase().replace(' ', '_')}` : ''),
 									sortText: `${priority}_${user.login}`,
-									detail: `${user.name}`
+									detail: user.name,
+									kind: vscode.CompletionItemKind.User,
+									login: user.login
 								});
 							}
 						});
@@ -358,11 +368,13 @@ export class PullRequestManager implements vscode.Disposable {
 						if (!secondMap[user]) {
 							// if the mentionable api call fails partially, we should still populate related users from timeline events into the completion list
 							cachedUsers.push({
-								label: `@${prRelatedUsersMap[user].login}`,
+								label: prRelatedUsersMap[user].login,
 								insertText: `${prRelatedUsersMap[user].login}`,
 								filterText: `${prRelatedUsersMap[user].login}` + (prRelatedUsersMap[user].name && prRelatedUsersMap[user].name !== prRelatedUsersMap[user].login ? `_${prRelatedUsersMap[user].name!.toLowerCase().replace(' ', '_')}` : ''),
 								sortText: `0_${prRelatedUsersMap[user].login}`,
-								detail: `${prRelatedUsersMap[user].name}`
+								detail: prRelatedUsersMap[user].name,
+								kind: vscode.CompletionItemKind.User,
+								login: prRelatedUsersMap[user].login
 							});
 						}
 					}
@@ -372,6 +384,18 @@ export class PullRequestManager implements vscode.Disposable {
 				} catch (e) {
 					return [];
 				}
+			},
+			resolveCompletionItem: async (item: vscode.CompletionItem, token: vscode.CancellationToken) => {
+				try {
+					const repo = await this.getPullRequestDefaults();
+					const user: User | undefined = await this.resolveUser(repo.owner, repo.repo, item.label);
+					if (user) {
+						item.documentation = userMarkdown(repo, user);
+					}
+				} catch (e) {
+					// The user might not be resolvable in the repo, since users from outside the repo are included in the list.
+				}
+				return item;
 			}
 		}, '@');
 
@@ -408,7 +432,7 @@ export class PullRequestManager implements vscode.Disposable {
 	}
 
 	async clearCredentialCache(): Promise<void> {
-		this._credentialStore.reset();
+		await this._credentialStore.reset();
 		this.state = PRManagerState.Initializing;
 	}
 
@@ -427,40 +451,19 @@ export class PullRequestManager implements vscode.Disposable {
 		return activeRemotes;
 	}
 
-	async updateRepositories(): Promise<void> {
+	async updateRepositories(silent: boolean = false): Promise<void> {
 		if (this._git.state === 'uninitialized') {
 			return;
 		}
 
 		const activeRemotes = await this.getActiveRemotes();
-
-		const serverAuthPromises: Promise<boolean>[] = [];
-		const authenticatedRemotes: Remote[] = [];
-
-		const activeRemotesByAuthority = groupBy(activeRemotes, remote => remote.gitProtocol.normalizeUri()!.authority);
-		for (const authority of Object.keys(activeRemotesByAuthority)) {
-			const remotesForAuthority = activeRemotesByAuthority[authority];
-			serverAuthPromises.push(this._credentialStore.hasOctokit(remotesForAuthority[0]).then(authd => {
-				if (!authd) {
-					return false;
-				} else {
-					authenticatedRemotes.push(...remotesForAuthority);
-					return true;
-				}
-			}));
-		}
-
-		let hasAuthenticated = false;
-		await Promise.all(serverAuthPromises).then(authenticationResult => {
-			hasAuthenticated = authenticationResult.some(isAuthd => isAuthd);
-			vscode.commands.executeCommand('setContext', 'github:authenticated', hasAuthenticated);
-		}).catch(e => {
-			Logger.appendLine(`serverAuthPromises failed: ${formatError(e)}`);
-		});
+		const isAuthenticated = this._credentialStore.isAuthenticated();
+		vscode.commands.executeCommand('setContext', 'github:authenticated', isAuthenticated);
 
 		const repositories: GitHubRepository[] = [];
 		const resolveRemotePromises: Promise<void>[] = [];
 
+		const authenticatedRemotes = isAuthenticated ? activeRemotes : [];
 		authenticatedRemotes.forEach(remote => {
 			const repository = this.createGitHubRepository(remote, this._credentialStore);
 			resolveRemotePromises.push(repository.resolveRemote());
@@ -477,9 +480,23 @@ export class PullRequestManager implements vscode.Disposable {
 
 			this.getMentionableUsers(repositoriesChanged);
 			this.getAssignableUsers(repositoriesChanged);
-			this.state = hasAuthenticated || !activeRemotes.length ? PRManagerState.RepositoriesLoaded : PRManagerState.NeedsAuthentication;
+			this.state = isAuthenticated || !activeRemotes.length ? PRManagerState.RepositoriesLoaded : PRManagerState.NeedsAuthentication;
+			if (!silent) {
+				this._onDidChangeRepositories.fire();
+			}
 			return Promise.resolve();
 		});
+	}
+
+	getAllAssignableUsers(): IAccount[] | undefined {
+		if (this._assignableUsers) {
+			const allAssignableUsers: IAccount[] = [];
+			Object.keys(this._assignableUsers).forEach(k => {
+				allAssignableUsers.push(...this._assignableUsers![k]);
+			});
+
+			return allAssignableUsers;
+		}
 	}
 
 	async getMentionableUsers(clearCache?: boolean): Promise<{ [key: string]: IAccount[] }> {
@@ -522,10 +539,12 @@ export class PullRequestManager implements vscode.Disposable {
 
 		if (!this._fetchAssignableUsersPromise) {
 			const cache: { [key: string]: IAccount[] } = {};
+			const allAssignableUsers: IAccount[] = [];
 			return this._fetchAssignableUsersPromise = new Promise((resolve) => {
 				const promises = this._githubRepositories.map(async githubRepository => {
 					const data = await githubRepository.getAssignableUsers();
 					cache[githubRepository.remote.remoteName] = data.sort(loginComparator);
+					allAssignableUsers.push(...data);
 					return;
 				});
 
@@ -533,6 +552,7 @@ export class PullRequestManager implements vscode.Disposable {
 					this._assignableUsers = cache;
 					this._fetchAssignableUsersPromise = undefined;
 					resolve(cache);
+					this._onDidChangeAssignableUsers.fire(allAssignableUsers);
 				});
 			});
 		}
@@ -557,22 +577,12 @@ export class PullRequestManager implements vscode.Disposable {
 	/**
 	 * Returns all remotes from the repository.
 	 */
-	getAllGitHubRemotes(): Remote[] {
-		return this._allGitHubRemotes;
+	async getAllGitHubRemotes(): Promise<Remote[]> {
+		return await this.computeAllGitHubRemotes();
 	}
 
 	async authenticate(): Promise<boolean> {
-		let wasSuccessful = false;
-		const activeRemotes = await this.getActiveGitHubRemotes(this._allGitHubRemotes);
-
-		const promises = uniqBy(activeRemotes, x => x.normalizedHost).map(async remote => {
-			wasSuccessful = !!(await this._credentialStore.login(remote)) || wasSuccessful;
-			return;
-		});
-
-		return Promise.all(promises).then(_ => {
-			return wasSuccessful;
-		});
+		return !!(await this._credentialStore.login());
 	}
 
 	async getLocalPullRequests(): Promise<PullRequestModel[]> {
@@ -688,7 +698,7 @@ export class PullRequestManager implements vscode.Disposable {
 	 *   If `this.totalFetchQueries[queryId] === 0`, we are in case 1.
 	 *   Otherwise, we're in case 3.
 	 */
-	private async fetchPagedData<T>(options: IPullRequestsPagingOptions = { fetchNextPage: false }, queryId: string, isPullRequest: boolean, type: PRType = PRType.All, query?: string): Promise<ItemsResponseResult<T>> {
+	private async fetchPagedData<T>(options: IPullRequestsPagingOptions = { fetchNextPage: false }, queryId: string, pagedDataType: PagedDataType = PagedDataType.PullRequest, type: PRType = PRType.All, query?: string): Promise<ItemsResponseResult<T>> {
 		if (!this._githubRepositories || !this._githubRepositories.length) {
 			return {
 				items: [],
@@ -732,14 +742,23 @@ export class PullRequestManager implements vscode.Disposable {
 			const pageInformation = this._repositoryPageInformation.get(remoteId)!;
 
 			const fetchPage = async (pageNumber: number): Promise<{ items: any[], hasMorePages: boolean } | undefined> => {
-				if (isPullRequest) {
-					if (type === PRType.All) {
-						return githubRepository.getAllPullRequests(pageNumber);
-					} else {
-						return githubRepository.getPullRequestsForCategory(query || '', pageNumber);
+				switch (pagedDataType) {
+					case PagedDataType.PullRequest: {
+						if (type === PRType.All) {
+							return githubRepository.getAllPullRequests(pageNumber);
+						} else {
+							return githubRepository.getPullRequestsForCategory(query || '', pageNumber);
+						}
 					}
-				} else {
-					return githubRepository.getIssuesForUserByMilestone(pageInformation.pullRequestPage);
+					case PagedDataType.Milestones: {
+						return githubRepository.getIssuesForUserByMilestone(pageInformation.pullRequestPage);
+					}
+					case PagedDataType.IssuesWithoutMilestone: {
+						return githubRepository.getIssuesWithoutMilestone(pageInformation.pullRequestPage);
+					}
+					case PagedDataType.IssueSearch: {
+						return githubRepository.getIssues(pageInformation.pullRequestPage, query);
+					}
 				}
 			};
 
@@ -794,11 +813,27 @@ export class PullRequestManager implements vscode.Disposable {
 
 	async getPullRequests(type: PRType, options: IPullRequestsPagingOptions = { fetchNextPage: false }, query?: string): Promise<ItemsResponseResult<PullRequestModel>> {
 		const queryId = type.toString() + (query || '');
-		return this.fetchPagedData<PullRequestModel>(options, queryId, true, type, query);
+		return this.fetchPagedData<PullRequestModel>(options, queryId, PagedDataType.PullRequest, type, query);
 	}
 
-	async getIssues(options: IPullRequestsPagingOptions = { fetchNextPage: false }, query?: string): Promise<ItemsResponseResult<MilestoneModel>> {
-		return this.fetchPagedData<MilestoneModel>(options, 'issuesKey', false, PRType.All, query);
+	async getMilestones(options: IPullRequestsPagingOptions = { fetchNextPage: false }, includeIssuesWithoutMilstone: boolean = false, query?: string): Promise<ItemsResponseResult<MilestoneModel>> {
+		const milestones: ItemsResponseResult<MilestoneModel> = await this.fetchPagedData<MilestoneModel>(options, 'issuesKey', PagedDataType.Milestones, PRType.All, query);
+		if (includeIssuesWithoutMilstone) {
+			const additionalIssues: ItemsResponseResult<IssueModel> = await this.fetchPagedData<IssueModel>(options, 'issuesKey', PagedDataType.IssuesWithoutMilestone, PRType.All, query);
+			milestones.items.push({
+				milestone: {
+					createdAt: new Date(0).toDateString(),
+					id: '',
+					title: NO_MILESTONE
+				},
+				issues: additionalIssues.items
+			});
+		}
+		return milestones;
+	}
+
+	async getIssues(options: IPullRequestsPagingOptions = { fetchNextPage: false }, query?: string): Promise<ItemsResponseResult<IssueModel>> {
+		return this.fetchPagedData<IssueModel>(options, 'issuesKey', PagedDataType.IssueSearch, PRType.All, query);
 	}
 
 	async getStatusChecks(pullRequest: PullRequestModel): Promise<Octokit.ReposGetCombinedStatusForRefResponse | undefined> {
@@ -848,7 +883,7 @@ export class PullRequestManager implements vscode.Disposable {
 
 			return comments;
 		} catch (e) {
-			Logger.appendLine(`Failed to get pull request review comments: ${formatError(e)}`);
+			Logger.appendLine(`Failed to get pull request review comments: ${e}`);
 			return [];
 		}
 	}
@@ -1000,7 +1035,7 @@ export class PullRequestManager implements vscode.Disposable {
 				in_reply_to: Number(reply_to.id)
 			});
 
-			return this.addCommentPermissions(convertPullRequestsGetCommentsResponseItemToComment(ret.data, githubRepository), remote);
+			return this.addCommentPermissions(convertPullRequestsGetCommentsResponseItemToComment(ret.data, githubRepository));
 		} catch (e) {
 			this.handleError(e);
 		}
@@ -1027,24 +1062,27 @@ export class PullRequestManager implements vscode.Disposable {
 		};
 	}
 
-	async startReview(pullRequest: PullRequestModel): Promise<void> {
+	async startReview(pullRequest: PullRequestModel, initialComment: { body: string, path: string, position: number }): Promise<IComment> {
 		const { mutate, schema } = await pullRequest.githubRepository.ensure();
-		await mutate<void>({
+		const { data } = await mutate<StartReviewResponse>({
 			mutation: schema.StartReview,
 			variables: {
 				input: {
 					body: '',
-					pullRequestId: pullRequest.item.graphNodeId
+					pullRequestId: pullRequest.item.graphNodeId,
+					comments: initialComment
 				}
 			}
-		}).then(x => x.data).catch(e => {
-			Logger.appendLine(`Failed to start review: ${e.message}`);
 		});
+
+		if (!data) {
+			throw new Error('Failed to start review');
+		}
 
 		pullRequest.inDraftMode = true;
 		await this.updateDraftModeContext(pullRequest);
 
-		return;
+		return parseGraphQLComment(data.addPullRequestReview.pullRequestReview.comments.nodes[0]);
 	}
 
 	async validateDraftMode(pullRequest: PullRequestModel): Promise<boolean> {
@@ -1164,7 +1202,7 @@ export class PullRequestManager implements vscode.Disposable {
 				position: position
 			});
 
-			return this.addCommentPermissions(convertPullRequestsGetCommentsResponseItemToComment(ret.data, githubRepository), remote);
+			return this.addCommentPermissions(convertPullRequestsGetCommentsResponseItemToComment(ret.data, githubRepository));
 		} catch (e) {
 			this.handleError(e);
 		}
@@ -1230,7 +1268,7 @@ export class PullRequestManager implements vscode.Disposable {
 			// If the upstream wasn't listed in the remotes setting, create a GitHubRepository
 			// object for it if is does point to GitHub.
 			if (!upstream) {
-				const remote = this.getAllGitHubRemotes().find(r => r.remoteName === upstreamRef.remote);
+				const remote = (await this.getAllGitHubRemotes()).find(r => r.remoteName === upstreamRef.remote);
 				if (remote) {
 					return new GitHubRepository(remote, this._credentialStore);
 				}
@@ -1303,7 +1341,7 @@ export class PullRequestManager implements vscode.Disposable {
 			this._telemetry.sendTelemetryEvent('pr.create.success', { isDraft: (params.draft || '').toString() });
 			return pullRequestModel;
 		} catch (e) {
-			Logger.appendLine(`GitHubRepository> Creating pull requests failed: ${formatError(e)}`);
+			Logger.appendLine(`GitHubRepository> Creating pull requests failed: ${e}`);
 
 			/* __GDPR__
 				"pr.create.failure" : {
@@ -1311,7 +1349,7 @@ export class PullRequestManager implements vscode.Disposable {
 					"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
 				}
 			*/
-			this._telemetry.sendTelemetryEvent('pr.create.failure', {
+			this._telemetry.sendTelemetryErrorEvent('pr.create.failure', {
 				isDraft: (params.draft || '').toString(),
 				message: formatError(e)
 			});
@@ -1340,14 +1378,14 @@ export class PullRequestManager implements vscode.Disposable {
 			this._telemetry.sendTelemetryEvent('issue.create.success');
 			return issueModel;
 		} catch (e) {
-			Logger.appendLine(`GitHubRepository> Creating issue failed: ${formatError(e)}`);
+			Logger.appendLine(`GitHubRepository> Creating issue failed: ${e}`);
 
 			/* __GDPR__
 				"issue.create.failure" : {
 					"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
 				}
 			*/
-			this._telemetry.sendTelemetryEvent('issue.create.failure', {
+			this._telemetry.sendTelemetryErrorEvent('issue.create.failure', {
 				message: formatError(e)
 			});
 			vscode.window.showWarningMessage(`Creating issue failed: ${formatError(e)}`);
@@ -1420,15 +1458,15 @@ export class PullRequestManager implements vscode.Disposable {
 
 	canEditPullRequest(issueModel: IssueModel): boolean {
 		const username = issueModel.author && issueModel.author.login;
-		return this._credentialStore.isCurrentUser(username, issueModel.remote);
+		return this._credentialStore.isCurrentUser(username);
 	}
 
 	getCurrentUser(issueModel: IssueModel): IAccount {
-		return convertRESTUserToAccount(this._credentialStore.getCurrentUser(issueModel.remote), issueModel.githubRepository);
+		return convertRESTUserToAccount(this._credentialStore.getCurrentUser(), issueModel.githubRepository);
 	}
 
-	private addCommentPermissions(rawComment: IComment, remote: Remote): IComment {
-		const isCurrentUser = this._credentialStore.isCurrentUser(rawComment.user!.login, remote);
+	private addCommentPermissions(rawComment: IComment): IComment {
+		const isCurrentUser = this._credentialStore.isCurrentUser(rawComment.user!.login);
 		const notOutdated = rawComment.position !== null;
 		rawComment.canEdit = isCurrentUser && notOutdated;
 		rawComment.canDelete = isCurrentUser && notOutdated;
@@ -1497,7 +1535,7 @@ export class PullRequestManager implements vscode.Disposable {
 				const { ahead } = this.repository.state.HEAD!;
 				if (ahead &&
 					await vscode.window.showWarningMessage(
-						`You have ${ahead} unpushed ${ahead > 1 ? 'commits' : 'commit'} on this PR branch.\n\nWould you like to proceed anyways?`,
+						`You have ${ahead} unpushed ${ahead > 1 ? 'commits' : 'commit'} on this PR branch.\n\nWould you like to proceed anyway?`,
 						{ modal: true },
 						'Yes') === undefined
 				) {
@@ -1511,7 +1549,7 @@ export class PullRequestManager implements vscode.Disposable {
 			if (workingDirectoryIsDirty) {
 				// We have made changes to the PR that are not committed
 				if (await vscode.window.showWarningMessage(
-					'You have uncommitted changes on this PR branch.\n\n Would you like to proceed anyways?', { modal: true }, 'Yes') === undefined) {
+					'You have uncommitted changes on this PR branch.\n\n Would you like to proceed anyway?', { modal: true }, 'Yes') === undefined) {
 					return {
 						merged: false,
 						message: 'uncommitted changes'
@@ -1540,7 +1578,7 @@ export class PullRequestManager implements vscode.Disposable {
 						"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
 					}
 				*/
-				this._telemetry.sendTelemetryEvent('pr.merge.failure', { message: formatError(e) });
+				this._telemetry.sendTelemetryErrorEvent('pr.merge.failure', { message: formatError(e) });
 				throw e;
 			});
 	}
@@ -1792,7 +1830,7 @@ export class PullRequestManager implements vscode.Disposable {
 					"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
 				}
 			*/
-			this._telemetry.sendTelemetryEvent('pr.readyForReview.failure', { message: formatError(e) });
+			this._telemetry.sendTelemetryErrorEvent('pr.readyForReview.failure', { message: formatError(e) });
 			throw e;
 		}
 	}
@@ -2004,10 +2042,10 @@ export class PullRequestManager implements vscode.Disposable {
 		}
 	}
 
-	async resolveIssue(owner: string, repositoryName: string, pullRequestNumber: number): Promise<IssueModel | undefined> {
+	async resolveIssue(owner: string, repositoryName: string, pullRequestNumber: number, withComments: boolean = false): Promise<IssueModel | undefined> {
 		const githubRepo = await this.resolveItem(owner, repositoryName, pullRequestNumber);
 		if (githubRepo) {
-			return githubRepo.getIssue(pullRequestNumber);
+			return githubRepo.getIssue(pullRequestNumber, withComments);
 		}
 	}
 

@@ -35,18 +35,21 @@ export interface HeadRefDeletedEvent {
 	headRefName: string;
 }
 
-export interface IssueComment {
-	__typename: string;
-	id: string;
-	databaseId: number;
-	authorAssocation: string;
+export interface AbbreviatedIssueComment {
 	author: {
 		login: string;
 		avatarUrl: string;
 		url: string;
 	};
-	url: string;
 	body: string;
+	databaseId: number;
+}
+
+export interface IssueComment extends AbbreviatedIssueComment {
+	__typename: string;
+	authorAssocation: string;
+	id: string;
+	url: string;
 	bodyHTML: string;
 	updatedAt: string;
 	createdAt: string;
@@ -210,6 +213,7 @@ export interface MentionableUsersResponse {
 				avatarUrl: string;
 				name: string;
 				url: string;
+				email: string;
 			}[];
 			pageInfo: {
 				hasNextPage: boolean;
@@ -228,6 +232,7 @@ export interface AssignableUsersResponse {
 				avatarUrl: string;
 				name: string;
 				url: string;
+				email: string;
 			}[];
 			pageInfo: {
 				hasNextPage: boolean;
@@ -365,6 +370,9 @@ export interface PullRequest {
 		url: string;
 		avatarUrl: string;
 	};
+	comments?: {
+		nodes: AbbreviatedIssueComment[];
+	};
 	createdAt: string;
 	updatedAt: string;
 	headRef?: Ref;
@@ -372,6 +380,7 @@ export interface PullRequest {
 	labels: {
 		nodes: {
 			name: string;
+			color: string;
 		}[];
 	};
 	merged: boolean;
@@ -384,6 +393,13 @@ export interface PullRequest {
 		id: string,
 		createdAt: string
 	};
+	repository?: {
+		name: string,
+		owner: {
+			login: string
+		},
+		url: string
+	};
 }
 
 export interface PullRequestResponse {
@@ -393,7 +409,7 @@ export interface PullRequestResponse {
 	rateLimit: RateLimit;
 }
 
-export interface PullRequestSearchResponse {
+export interface IssuesSearchResponse {
 	search: {
 		issueCount: number,
 		pageInfo: {
@@ -420,6 +436,20 @@ export interface MilestoneIssuesResponse {
 						node: PullRequest
 					}[]
 				}
+			}[],
+			pageInfo: {
+				hasNextPage: boolean;
+				endCursor: string;
+			}
+		}
+	};
+}
+
+export interface IssuesResponse {
+	repository: {
+		issues: {
+			edges: {
+				node: PullRequest
 			}[],
 			pageInfo: {
 				hasNextPage: boolean;
@@ -462,5 +492,15 @@ export interface UserResponse {
 		name: string;
 		contributionsCollection: ContributionsCollection;
 		url: string;
+	};
+}
+
+export interface StartReviewResponse {
+	addPullRequestReview: {
+		pullRequestReview: {
+			comments: {
+				nodes: ReviewComment[]
+			}
+		};
 	};
 }

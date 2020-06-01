@@ -18,7 +18,6 @@ import { GitChangeType } from './common/file';
 import { getDiffLineByPosition, getZeroBased } from './common/diffPositionMapping';
 import { DiffChangeType } from './common/diffHunk';
 import { DescriptionNode } from './view/treeNodes/descriptionNode';
-import { listHosts, deleteToken } from './authentication/keychain';
 import { writeFile, unlink } from 'fs';
 import Logger from './common/logger';
 import { GitErrorCodes } from './api/api';
@@ -28,9 +27,11 @@ import { PullRequestManager } from './github/pullRequestManager';
 import { PullRequestModel } from './github/pullRequestModel';
 import { resolveCommentHandler, CommentReply } from './commentHandlerResolver';
 import { ITelemetry } from './common/telemetry';
+import { TreeNode } from './view/treeNodes/treeNode';
+import { CredentialStore } from './github/credentials';
 
-const _onDidUpdatePR = new vscode.EventEmitter<PullRequest | undefined>();
-export const onDidUpdatePR: vscode.Event<PullRequest | undefined> = _onDidUpdatePR.event;
+const _onDidUpdatePR = new vscode.EventEmitter<PullRequest | void>();
+export const onDidUpdatePR: vscode.Event<PullRequest | void> = _onDidUpdatePR.event;
 
 function ensurePR(prManager: PullRequestManager, pr?: PRNode | PullRequestModel): PullRequestModel {
 	// If the command is called from the command palette, no arguments are passed.
@@ -46,12 +47,10 @@ function ensurePR(prManager: PullRequestManager, pr?: PRNode | PullRequestModel)
 	}
 }
 
-export function registerCommands(context: vscode.ExtensionContext, prManager: PullRequestManager,
-	reviewManager: ReviewManager, telemetry: ITelemetry) {
+export function registerCommands(context: vscode.ExtensionContext, prManager: PullRequestManager, reviewManager: ReviewManager, telemetry: ITelemetry, credentialStore: CredentialStore) {
+
 	context.subscriptions.push(vscode.commands.registerCommand('auth.signout', async () => {
-		const selection = await vscode.window.showQuickPick(await listHosts(), { canPickMany: true, ignoreFocusOut: true });
-		if (!selection) { return; }
-		await Promise.all(selection.map(host => deleteToken(host)));
+		credentialStore.logout();
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.openPullRequestInGitHub', (e: PRNode | DescriptionNode | PullRequestModel) => {
@@ -151,6 +150,9 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('pr.openDiffView', async (fileChangeNode: GitFileChangeNode | InMemFileChangeNode) => {
+		const GIT_FETCH_COMMAND = 'Run \'git fetch\'';
+		const TITLE = 'GitHub Pull Requests';
+
 		const parentFilePath = fileChangeNode.parentFilePath;
 		const filePath = fileChangeNode.filePath;
 		const fileName = fileChangeNode.fileName;
@@ -160,7 +162,28 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 		fileChangeNode.reveal(fileChangeNode, { select: true, focus: true });
 
 		if (isPartial) {
-			vscode.window.showInformationMessage('Your local repository is not up to date so only partial content is being displayed');
+			vscode.window.showInformationMessage('Your local repository is not up to date. Fetch the PR base branch to show full content.', GIT_FETCH_COMMAND)
+				.then(selection => {
+					if (selection === GIT_FETCH_COMMAND) {
+						const prNode = getPRNode();
+						return vscode.window.withProgress({
+							location: vscode.ProgressLocation.Notification,
+							title: TITLE,
+							cancellable: false
+						}, progress => prNode.fetchBaseBranchAndReload(progress));
+
+						function getPRNode(): PRNode {
+							let parent: TreeNode | undefined;
+							for (parent = fileChangeNode; parent; parent = parent.getParent()) {
+								if (parent instanceof PRNode) {
+									return parent;
+								}
+							}
+
+							throw new Error('fileChangeNode was not contained in a PRNode');
+						}
+					}
+				});
 		}
 
 		let parentURI = await asImageDataURI(parentFilePath, prManager.repository) || parentFilePath;
@@ -208,7 +231,7 @@ export function registerCommands(context: vscode.ExtensionContext, prManager: Pu
 					"message" : { "classification": "CallstackOrException", "purpose": "PerformanceAndHealth" }
 				}
 			*/
-			telemetry.sendTelemetryEvent('pr.deleteLocalPullRequest.failure', {
+			telemetry.sendTelemetryErrorEvent('pr.deleteLocalPullRequest.failure', {
 				message: error
 			});
 			await vscode.window.showErrorMessage(`Deleting local pull request branch failed: ${error}`);

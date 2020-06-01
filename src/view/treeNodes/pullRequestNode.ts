@@ -290,6 +290,62 @@ export class PRNode extends TreeNode implements CommentHandler, vscode.Commentin
 		});
 	}
 
+	async fetchBaseBranchAndReload(progress: vscode.Progress<{ message?: string; increment?: number }>) {
+		const { remote: { remoteName }, base: { ref } } = this.pullRequestModel;
+
+		progress.report({ message: `Running 'git fetch ${remoteName} ${ref}'`, increment: 0 });
+		await this._prManager.repository.fetch(remoteName, ref);
+
+		const PROGRESS_MESSAGE = 'Reloading document';
+		progress.report({ message: PROGRESS_MESSAGE, increment: 50 });
+
+		const changes = await this.getFileChanges();
+		for (const change of changes) {
+			if (change instanceof InMemFileChangeNode) {
+				// The full content is now present for all files in the PR, since we fetched the base branch.
+				change.isPartial = false;
+			}
+		}
+
+		const initiallyVisibleEditors = vscode.window.visibleTextEditors;
+		const numEditors = initiallyVisibleEditors.length;
+		if (numEditors !== 0) {
+			const documentChangedIncrement = 40 / numEditors;
+
+			const allEditorsUpdatedPromise = new Promise(resolve => {
+				const remainingEditors = initiallyVisibleEditors.slice();
+
+				const handler = (document: vscode.TextDocument) => {
+					const index = remainingEditors.findIndex(editor => editor.document === document);
+					if (index !== -1) {
+						remainingEditors.splice(index, 1);
+						progress.report({ message: PROGRESS_MESSAGE, increment: documentChangedIncrement });
+					}
+
+					const anyRemainingDocumentsVisible = remainingEditors.some(editor => vscode.window.visibleTextEditors.indexOf(editor) !== -1);
+					if (!anyRemainingDocumentsVisible || remainingEditors.length === 0) {
+						onChangeDisposable.dispose();
+						onCloseDisposable.dispose();
+						resolve();
+					}
+				};
+
+				const onChangeDisposable = vscode.workspace.onDidChangeTextDocument(e => handler(e.document));
+				const onCloseDisposable = vscode.workspace.onDidCloseTextDocument(handler);
+			});
+
+			const contentProvider = getInMemPRContentProvider();
+			for (const editor of initiallyVisibleEditors) {
+				contentProvider.fireDidChange(editor.document.uri);
+			}
+
+			await allEditorsUpdatedPromise;
+		}
+
+		progress.report({ message: 'Reloading comments', increment: 10 });
+		await this.refreshExistingPREditors(vscode.window.visibleTextEditors, false);
+	}
+
 	async refreshExistingPREditors(editors: vscode.TextEditor[], incremental: boolean): Promise<void> {
 		let currentPRDocuments = editors.filter(editor => {
 			if (editor.document.uri.scheme !== 'pr') {
@@ -331,16 +387,9 @@ export class PRNode extends TreeNode implements CommentHandler, vscode.Commentin
 		currentPRDocuments = uniqBy(currentPRDocuments, editor => editor.fileName);
 
 		if (currentPRDocuments.length) {
-			// initialize before await
-			currentPRDocuments.forEach(async editor => {
-				if (commentThreadCache[editor.fileName]) {
-					commentThreadCache[editor.fileName] = [];
-				}
-			});
-
 			const fileChanges = await this.getFileChanges();
 			await this._prManager.validateDraftMode(this.pullRequestModel);
-			currentPRDocuments.forEach(async editor => {
+			currentPRDocuments.forEach(editor => {
 				const fileChange = fileChanges.find(fc => fc.fileName === editor.fileName);
 
 				if (!fileChange || fileChange instanceof RemoteFileChangeNode) {
@@ -772,11 +821,7 @@ export class PRNode extends TreeNode implements CommentHandler, vscode.Commentin
 		}
 	}
 
-	private async createFirstCommentInThread(thread: GHPRCommentThread, input: string, fileChange: InMemFileChangeNode): Promise<IComment | undefined> {
-		const position = this.calculateCommentPosition(fileChange, thread);
-		const rawComment = await this._prManager.createComment(this.pullRequestModel, input, fileChange.fileName, position);
-
-		// Add new thread to cache
+	private async updateCommentThreadCache(thread: GHPRCommentThread, fileChange: InMemFileChangeNode, comment: IComment): Promise<void> {
 		const commentThreadCache = (await this.resolvePRCommentController()).commentThreadCache;
 		const existingThreads = commentThreadCache[fileChange.fileName];
 		if (existingThreads) {
@@ -784,6 +829,14 @@ export class PRNode extends TreeNode implements CommentHandler, vscode.Commentin
 		} else {
 			commentThreadCache[fileChange.fileName] = [thread];
 		}
+	}
+
+	private async createFirstCommentInThread(thread: GHPRCommentThread, input: string, fileChange: InMemFileChangeNode): Promise<IComment | undefined> {
+		const position = this.calculateCommentPosition(fileChange, thread);
+		const rawComment = await this._prManager.createComment(this.pullRequestModel, input, fileChange.fileName, position);
+
+		// Add new thread to cache
+		this.updateCommentThreadCache(thread, fileChange, rawComment!);
 
 		return rawComment;
 	}
@@ -854,9 +907,34 @@ export class PRNode extends TreeNode implements CommentHandler, vscode.Commentin
 
 	// #region Review
 	public async startReview(thread: GHPRCommentThread, input: string): Promise<void> {
-		await this._prManager.startReview(this.pullRequestModel);
-		await this.createOrReplyComment(thread, input);
-		this.setContextKey(true);
+		const temporaryCommentId = this.optimisticallyAddComment(thread, input, true);
+
+		try {
+			const fileChange = await this.findMatchingFileNode(thread.uri);
+			const position = this.calculateCommentPosition(fileChange, thread);
+			const newComment = await this._prManager.startReview(this.pullRequestModel,
+				{
+					body: input,
+					path: fileChange.fileName,
+					position
+				}
+			);
+
+			await this.updateCommentThreadCache(thread, fileChange, newComment);
+			this.replaceTemporaryComment(thread, newComment, temporaryCommentId);
+			fileChange.update(fileChange.comments.concat(newComment));
+			this.setContextKey(true);
+		} catch (e) {
+			vscode.window.showErrorMessage(`Starting a review failed: ${e}`);
+
+			thread.comments = thread.comments.map(c => {
+				if (c instanceof TemporaryComment && c.id === temporaryCommentId) {
+					c.mode = vscode.CommentMode.Editing;
+				}
+
+				return c;
+			});
+		}
 	}
 
 	public async finishReview(thread: GHPRCommentThread, input: string): Promise<void> {
