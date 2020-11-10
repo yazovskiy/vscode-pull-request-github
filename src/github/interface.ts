@@ -84,7 +84,7 @@ export interface Issue {
 	body: string;
 	bodyHTML?: string;
 	title: string;
-	assignee?: IAccount;
+	assignees?: IAccount[];
 	createdAt: string;
 	updatedAt: string;
 	user: IAccount;
@@ -148,5 +148,18 @@ export interface User extends IAccount {
 	commitContributions: {
 		createdAt: Date;
 		repoNameWithOwner: string;
+	}[];
+}
+
+export interface PullRequestChecks {
+	state: string;
+	statuses: {
+		id: string;
+		url?: string;
+		avatar_url?: string;
+		state?: string;
+		description?: string;
+		target_url?: string;
+		context: string;
 	}[];
 }

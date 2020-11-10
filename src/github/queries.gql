@@ -80,6 +80,7 @@ fragment Commit on PullRequestCommit {
 		}
 		oid
 		message
+		authoredDate
 	}
 	url
 }
@@ -579,6 +580,12 @@ query IssuesWithoutMilestone($owner: String!, $name: String!, $assignee: String!
 						body
 						bodyHTML
 						title
+						assignees(first: 10) {
+							nodes {
+								login
+								url
+							}
+						}
 						author {
 							login
 							url
@@ -604,6 +611,23 @@ query IssuesWithoutMilestone($owner: String!, $name: String!, $assignee: String!
 			pageInfo {
 				hasNextPage
 				endCursor
+			}
+		}
+	}
+}
+
+query MaxIssue($owner: String!, $name: String!) {
+	repository(owner: $owner, name: $name) {
+		issues(first: 1, orderBy: {
+			direction: DESC
+			field: CREATED_AT
+		}) {
+			edges {
+				node {
+					... on Issue {
+						number
+					}
+				}
 			}
 		}
 	}
@@ -635,6 +659,12 @@ query GetMilestones($owner: String!, $name: String!, $assignee: String!) {
 								body
 								bodyHTML
 								title
+								assignees(first: 10) {
+									nodes {
+										login
+										url
+									}
+								}
 								author {
 									login
 									url
@@ -683,6 +713,12 @@ query Issues($query: String!) {
 					body
 					bodyHTML
 					title
+					assignees(first: 10) {
+						nodes {
+							login
+							url
+						}
+					}
 					author {
 						login
 						url
@@ -710,6 +746,64 @@ query Issues($query: String!) {
 							login
 						}
 						url
+					}
+				}
+			}
+		}
+	}
+}
+
+query GetViewerPermission($owner: String!, $name: String!) {
+	repository(owner: $owner, name: $name) {
+		viewerPermission
+	}
+}
+
+query GetRepositoryForkDetails($owner: String!, $name: String!) {
+	repository(owner:$owner, name: $name) {
+		isFork
+		parent {
+			name
+			owner
+		}
+	}
+}
+
+query GetChecks($owner: String!, $name: String!, $number: Int!) {
+	repository(owner: $owner, name: $name) {
+		pullRequest(number: $number) {
+			commits(last: 1) {
+				nodes {
+					commit {
+						statusCheckRollup {
+							state
+							contexts(first: 100) {
+								nodes {
+									...on StatusContext {
+										id
+										state
+										targetUrl
+										description
+										context
+										avatarUrl
+									}
+									...on CheckRun {
+										id
+										conclusion
+										title
+										detailsUrl
+										name
+										resourcePath
+										checkSuite {
+											app {
+												logoUrl
+												url
+											}
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			}

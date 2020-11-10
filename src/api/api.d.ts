@@ -6,6 +6,10 @@
 import { Uri, Event, Disposable } from 'vscode';
 import { APIState } from '../typings/git';
 
+export interface InputBox {
+	value: string;
+}
+
 export const enum RefType {
 	Head,
 	RemoteHead,
@@ -34,6 +38,10 @@ export interface Commit {
 	readonly hash: string;
 	readonly message: string;
 	readonly parents: string[];
+	readonly authorDate?: Date;
+	readonly authorName?: string;
+	readonly authorEmail?: string;
+	readonly commitDate?: Date;
 }
 
 export interface Submodule {
@@ -49,7 +57,7 @@ export interface Remote {
 	readonly isReadOnly: boolean;
 }
 
-export enum Status {
+export const enum Status {
 	INDEX_MODIFIED,
 	INDEX_ADDED,
 	INDEX_DELETED,
@@ -103,8 +111,24 @@ export interface RepositoryUIState {
 	readonly onDidChange: Event<void>;
 }
 
+export interface CommitOptions {
+	all?: boolean | 'tracked';
+	amend?: boolean;
+	signoff?: boolean;
+	signCommit?: boolean;
+	empty?: boolean;
+}
+
+export interface BranchQuery {
+	readonly remote?: boolean;
+	readonly pattern?: string;
+	readonly count?: number;
+	readonly contains?: string;
+}
+
 export interface Repository {
 
+	readonly inputBox: InputBox;
 	readonly rootUri: Uri;
 	readonly state: RepositoryState;
 	readonly ui: RepositoryUIState;
@@ -173,6 +197,7 @@ export interface Repository {
 	createBranch(name: string, checkout: boolean, ref?: string): Promise<void>;
 	deleteBranch(name: string, force?: boolean): Promise<void>;
 	getBranch(name: string): Promise<Branch>;
+	getBranches(query: BranchQuery): Promise<Ref[]>;
 	setBranchUpstream(name: string, upstream: string): Promise<void>;
 	getMergeBase(ref1: string, ref2: string): Promise<string>;
 
@@ -181,6 +206,7 @@ export interface Repository {
 
 	addRemote(name: string, url: string): Promise<void>;
 	removeRemote(name: string): Promise<void>;
+	renameRemote(name: string, newName: string): Promise<void>;
 
 	fetch(remote?: string, ref?: string, depth?: number): Promise<void>;
 	pull(unshallow?: boolean): Promise<void>;
@@ -188,6 +214,8 @@ export interface Repository {
 
 	blame(path: string): Promise<string>;
 	log(options?: LogOptions): Promise<Commit[]>;
+
+	commit(message: string, opts?: CommitOptions): Promise<void>;
 }
 
 /**
@@ -196,6 +224,7 @@ export interface Repository {
 export interface LogOptions {
 	/** Max number of log entries to retrieve. If not specified, the default is 32. */
 	readonly maxEntries?: number;
+	readonly path?: string;
 }
 
 export const enum GitErrorCodes {

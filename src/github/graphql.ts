@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { ForkDetails } from './githubRepository';
+
 export interface MergedEvent {
 	__typename: string;
 	id: string;
@@ -119,6 +121,7 @@ export interface Commit {
 		};
 		oid: string;
 		message: string;
+		authoredDate: Date
 	};
 
 	url: string;
@@ -365,6 +368,12 @@ export interface PullRequest {
 	body: string;
 	bodyHTML: string;
 	title: string;
+	assignees: {
+		nodes: {
+			login: string;
+			url: string;
+		}[];
+	};
 	author: {
 		login: string;
 		url: string;
@@ -459,6 +468,28 @@ export interface IssuesResponse {
 	};
 }
 
+export interface MaxIssueResponse {
+	repository: {
+		issues: {
+			edges: {
+				node: {
+					number: number
+				}
+			}[]
+		}
+	};
+}
+
+export interface ViewerPermissionResponse {
+	repository: {
+		viewerPermission: string
+	};
+}
+
+export interface ForkDetailsResponse {
+	repository: ForkDetails;
+}
+
 export interface QueryWithRateLimit {
 	rateLimit: RateLimit;
 }
@@ -502,5 +533,51 @@ export interface StartReviewResponse {
 				nodes: ReviewComment[]
 			}
 		};
+	};
+}
+
+export interface StatusContext {
+	id: string;
+	state?: 'ERROR' | 'EXPECTED' | 'FAILURE' | 'PENDING' | 'SUCCESS';
+	description?: string;
+	context: string;
+	targetUrl?: string;
+	avatarUrl?: string;
+}
+
+export interface CheckRun {
+	id: string;
+	conclusion?: 'ACTION_REQUIRED' | 'CANCELLED' | 'FAILURE' | 'NEUTRAL' | 'SKIPPED' | 'STALE' | 'SUCCESS' | 'TIMED_OUT';
+	name: string;
+	title?: string;
+	detailsUrl?: string;
+	checkSuite: {
+		app?: {
+			logoUrl: string;
+			url: string;
+		};
+	};
+}
+
+export function isCheckRun(x: CheckRun | StatusContext): x is CheckRun {
+	return !!(x as CheckRun).conclusion;
+}
+
+export interface GetChecksResponse {
+	repository: {
+		pullRequest: {
+			commits: {
+				nodes: {
+					commit: {
+						statusCheckRollup?: {
+							state: string;
+							contexts: {
+								nodes: (StatusContext | CheckRun)[]
+							}
+						}
+					}
+				}[]
+			}
+		}
 	};
 }
